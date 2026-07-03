@@ -1,0 +1,12 @@
+[phases.setup]
+nixPkgs = ["python312"]
+
+[build]
+builder = "python"
+pythonVersion = "3.12"
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python bot.py"

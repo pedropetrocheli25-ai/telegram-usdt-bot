@@ -2,68 +2,63 @@ import requests
 import time
 import threading
 import os
+import json
 from datetime import datetime
 from flask import Flask, request
 
 # ==================== CONFIGURACIÓN ====================
 TOKEN = os.environ.get('8925407023:AAFcITHXtPYhNJ9-O4kZT73LaYpKtKp3pe4')
-ID_ADMIN = int(os.environ.get('1373859142', 0))
+ID_ADMIN = os.environ.get('1373859142')
 
 if not TOKEN or not ID_ADMIN:
-    print("❌ ERROR: Configura TELEGRAM_TOKEN y ADMIN_ID")
+    print("❌ ERROR: Configura TELEGRAM_TOKEN y ADMIN_ID en Railway")
     exit(1)
 
+ID_ADMIN = int(ID_ADMIN)
 URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 ultimo_update_id = 0
 
 app = Flask(__name__)
 
-# ==================== ALERTAS - CONFIGURACIÓN ====================
-# Umbrales para alertas (cambio mínimo para notificar)
+# ==================== ALERTAS ====================
 UMBRALES = {
-    'VES': 1.0,    # Alerta si VES cambia ±1 Bs
-    'COP': 20.0,   # Alerta si COP cambia ±20 COP
-    'PEN': 0.20    # Alerta si PEN cambia ±0.20 PEN
+    'VES': 1.0,
+    'COP': 20.0,
+    'PEN': 0.20
 }
 
-# Guardar últimos precios para comparar
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 usuarios_activos = set()
+ARCHIVO_USUARIOS = "usuarios.txt"
 
 # ==================== GESTIÓN DE USUARIOS ====================
 
-def guardar_usuario(chat_id):
-    """Guarda usuario para enviarle alertas"""
-    global usuarios_activos
-    if chat_id not in usuarios_activos:
-        usuarios_activos.add(chat_id)
-        print(f"✅ Nuevo usuario registrado: {chat_id}")
-
 def cargar_usuarios():
-    """Carga usuarios desde archivo"""
     global usuarios_activos
     try:
-        if os.path.exists("usuarios.txt"):
-            with open("usuarios.txt", "r") as f:
+        if os.path.exists(ARCHIVO_USUARIOS):
+            with open(ARCHIVO_USUARIOS, 'r') as f:
                 for linea in f:
                     try:
                         usuarios_activos.add(int(linea.strip()))
                     except:
                         pass
             print(f"✅ {len(usuarios_activos)} usuarios cargados")
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ Error cargando usuarios: {e}")
 
-def guardar_usuarios_archivo():
-    """Guarda usuarios en archivo"""
-    try:
-        with open("usuarios.txt", "w") as f:
-            for uid in usuarios_activos:
-                f.write(f"{uid}\n")
-    except:
-        pass
+def guardar_usuario(chat_id):
+    global usuarios_activos
+    if chat_id not in usuarios_activos:
+        usuarios_activos.add(chat_id)
+        try:
+            with open(ARCHIVO_USUARIOS, 'a') as f:
+                f.write(f"{chat_id}\n")
+            print(f"✅ Nuevo usuario: {chat_id}")
+        except Exception as e:
+            print(f"⚠️ Error guardando usuario: {e}")
 
-# ==================== PRECIOS P2P REALES ====================
+# ==================== FUNCIONES DE PRECIOS ====================
 
 def obtener_precios_p2p_reales(fiat):
     try:
@@ -136,10 +131,9 @@ def obtener_precios_p2p_reales(fiat):
             precio_compra, precio_venta = precio_venta, precio_compra
         
         return precio_compra, precio_venta
-    except:
+    except Exception as e:
+        print(f"⚠️ Error obteniendo {fiat}: {e}")
         return None, None
-
-# ==================== TASAS DE CAMBIO ====================
 
 def obtener_tasas():
     try:
@@ -169,11 +163,10 @@ def obtener_tasas():
     
     return None
 
-# ==================== 🔔 ALERTAS ====================
+# ==================== ALERTAS ====================
 
 def verificar_alertas(precios):
-    """Verifica si hubo cambios y envía alertas"""
-    global ultimos_precios, usuarios_activos
+    global ultimos_precios
     
     if not precios:
         return
@@ -184,17 +177,13 @@ def verificar_alertas(precios):
         
         precio_actual = precios[moneda]['compra']
         
-        # Si es la primera vez, guardar precio
         if ultimos_precios[moneda] is None:
             ultimos_precios[moneda] = precio_actual
-            print(f"📊 {moneda}: Precio inicial {precio_actual:.2f}")
             continue
         
-        # Calcular cambio
         cambio = abs(precio_actual - ultimos_precios[moneda])
         umbral = UMBRALES.get(moneda, 0)
         
-        # Si el cambio supera el umbral, enviar alerta
         if cambio >= umbral:
             direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
             emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
@@ -202,20 +191,18 @@ def verificar_alertas(precios):
             cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
             
             mensaje = f"""
-{emoji} *🔔 ALERTA DE PRECIO {moneda}* {emoji}
+{emoji} *🔔 ALERTA {moneda}* {emoji}
 
-{direccion} en {signo}{cambio:.2f} {moneda}
+{direccion} en {signo}{cambio:.2f}
 
 📊 *Detalles:*
 • Anterior: {ultimos_precios[moneda]:.2f}
 • Actual: {precio_actual:.2f}
 • Cambio: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)
 
-🕐 Hora: {datetime.now().strftime('%H:%M:%S')}
-👥 Enviado a {len(usuarios_activos)} usuarios
+🕐 {datetime.now().strftime('%H:%M:%S')}
 """
             
-            # Enviar a TODOS los usuarios registrados
             for usuario in list(usuarios_activos):
                 try:
                     enviar_mensaje(usuario, mensaje)
@@ -223,9 +210,6 @@ def verificar_alertas(precios):
                 except:
                     pass
             
-            print(f"🔔 Alerta {moneda} enviada a {len(usuarios_activos)} usuarios")
-            
-            # Actualizar precio guardado
             ultimos_precios[moneda] = precio_actual
 
 # ==================== TELEGRAM ====================
@@ -246,16 +230,14 @@ def enviar_mensaje(chat_id, texto, teclado=None):
         return False
 
 def crear_teclado():
-    teclado = {
+    return {
         "keyboard": [
             ["💰 Precio USDT"],
             ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
             ["🇵🇪 Precio PEN", "📊 vs BCV"]
         ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False
+        "resize_keyboard": True
     }
-    return teclado
 
 def mostrar_precios(chat_id, moneda=None):
     precios = {}
@@ -271,7 +253,7 @@ def mostrar_precios(chat_id, moneda=None):
     tasas = obtener_tasas()
     
     if moneda == 'USDT' or moneda is None:
-        mensaje = f"💰 *PRECIOS USDT P2P BINANCE*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+        mensaje = f"💰 *PRECIOS USDT P2P*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
         
         for m, datos in precios.items():
             mensaje += f"*{m}*\n"
@@ -283,16 +265,15 @@ def mostrar_precios(chat_id, moneda=None):
             mensaje += f"🏦 *TASA DE CAMBIO*\n"
             mensaje += f"  💵 USD: {tasas['usd']:.2f} Bs\n"
             mensaje += f"  💶 EUR: {tasas['eur']:.2f} Bs\n"
-            mensaje += f"  📌 {tasas['fuente']}"
         
         enviar_mensaje(chat_id, mensaje, crear_teclado())
     
     elif moneda in precios:
         datos = precios[moneda]
-        mensaje = f"💰 *PRECIO {moneda}* 🏦\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-        mensaje += f"🟢 *COMPRA:* {datos['compra']:.2f}\n"
-        mensaje += f"🔴 *VENTA:* {datos['venta']:.2f}\n"
-        mensaje += f"📊 *Spread:* {datos['compra']-datos['venta']:.2f}\n"
+        mensaje = f"💰 *PRECIO {moneda}*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+        mensaje += f"🟢 COMPRA: {datos['compra']:.2f}\n"
+        mensaje += f"🔴 VENTA: {datos['venta']:.2f}\n"
+        mensaje += f"📊 Spread: {datos['compra']-datos['venta']:.2f}\n"
         
         if moneda == 'VES' and tasas:
             diff = datos['compra'] - tasas['usd']
@@ -302,9 +283,6 @@ def mostrar_precios(chat_id, moneda=None):
             mensaje += f"  Porcentaje: {pct:+.1f}%"
         
         enviar_mensaje(chat_id, mensaje, crear_teclado())
-    
-    else:
-        enviar_mensaje(chat_id, "❌ Moneda no disponible", crear_teclado())
 
 def mostrar_vs_bcv(chat_id):
     compra, venta = obtener_precios_p2p_reales('VES')
@@ -322,7 +300,7 @@ def mostrar_vs_bcv(chat_id):
     pct_compra = (diff_compra / tasas['usd']) * 100 if tasas['usd'] > 0 else 0
     pct_venta = (diff_venta / tasas['usd']) * 100 if tasas['usd'] > 0 else 0
     
-    mensaje = f"📊 *USDT vs BCV* 🏦\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje = f"📊 *USDT vs BCV*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
     mensaje += f"💵 *BCV USD:* {tasas['usd']:.2f} Bs\n\n"
     
     mensaje += f"🟢 *COMPRA USDT:* {compra:.2f} Bs\n"
@@ -337,30 +315,22 @@ def mostrar_vs_bcv(chat_id):
     
     enviar_mensaje(chat_id, mensaje, crear_teclado())
 
-# ==================== PROCESAR MENSAJES ====================
-
 def procesar_mensaje(chat_id, texto):
     print(f"📩 {texto}")
     
-    # Guardar usuario para alertas
     guardar_usuario(chat_id)
-    guardar_usuarios_archivo()
-    
-    texto_limpio = texto.replace("💰", "").replace("🇻🇪", "").replace("🇨🇴", "").replace("🇵🇪", "").replace("📊", "").strip()
     
     if texto == '/start':
         mensaje = f"""
-🤖 *BOT USDT P2P + BCV* 🚀
+🤖 *BOT USDT P2P* 🚀
 
-🔔 *Alertas activas para TODOS*
-• 📈 SUBIDA: Te avisa cuando sube
-• 📉 BAJADA: Te avisa cuando baja
-• 👥 {len(usuarios_activos)} usuarios reciben alertas
+🔔 *Alertas para todos*
+👥 {len(usuarios_activos)} usuarios
 
-📱 *Usa los botones:*
-• Precio USDT - Todas las monedas
-• Precio VES/COP/PEN - Cada moneda
-• vs BCV - Comparación con BCV
+📱 *Botones:*
+• Precio USDT - Todas
+• Precio VES/COP/PEN - Individual
+• vs BCV - Comparación
 """
         enviar_mensaje(chat_id, mensaje, crear_teclado())
     
@@ -380,7 +350,7 @@ def procesar_mensaje(chat_id, texto):
         mostrar_vs_bcv(chat_id)
     
     else:
-        enviar_mensaje(chat_id, "❓ Usa los botones o /start", crear_teclado())
+        enviar_mensaje(chat_id, "Usa /start", crear_teclado())
 
 # ==================== WEBHOOK ====================
 
@@ -404,13 +374,12 @@ def webhook():
 def home():
     return f"🤖 Bot USDT P2P + BCV - Activo 24/7\n👥 {len(usuarios_activos)} usuarios registrados\n🔔 Alertas activas"
 
-# ==================== 🔄 ACTUALIZACIÓN CONTINUA ====================
+# ==================== ACTUALIZACIÓN CONTINUA ====================
 
 def actualizar_precios():
-    """Actualiza precios cada 60 segundos y verifica alertas"""
     while True:
         try:
-            print(f"\n🔄 Actualizando precios... {datetime.now().strftime('%H:%M:%S')}")
+            print(f"\n🔄 Actualizando... {datetime.now().strftime('%H:%M:%S')}")
             
             precios = {}
             for moneda in ['VES', 'COP', 'PEN']:
@@ -419,9 +388,8 @@ def actualizar_precios():
                     precios[moneda] = {'compra': compra, 'venta': venta}
             
             if precios:
-                # Verificar alertas
                 verificar_alertas(precios)
-                print(f"  ✅ Precios actualizados: VES={precios.get('VES', {}).get('compra', 0):.2f}")
+                print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
             
             time.sleep(60)
             
@@ -437,17 +405,15 @@ if __name__ == "__main__":
     print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
     print(f"✅ ADMIN_ID: {ID_ADMIN if ID_ADMIN else 'FALTANTE'}")
     
-    # Cargar usuarios guardados
     cargar_usuarios()
     print(f"👥 {len(usuarios_activos)} usuarios registrados")
     
-    # Probar precios
     print("\n📊 Probando conexión a Binance...")
     for moneda in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_p2p_reales(moneda)
         if compra and venta:
             print(f"  ✅ {moneda}: {compra:.2f} / {venta:.2f}")
-            ultimos_precios[moneda] = compra  # Guardar precio inicial
+            ultimos_precios[moneda] = compra
         else:
             print(f"  ❌ {moneda}: No disponible")
     

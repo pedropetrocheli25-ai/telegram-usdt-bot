@@ -1,14 +1,67 @@
 import requests
 import time
 import threading
+import os
 from datetime import datetime
+from flask import Flask, request
 
 # ==================== CONFIGURACIÓN ====================
-TOKEN = "8925407023:AAFcITHXtPYhNJ9-O4kZT73LaYpKtKp3pe4"
-ID_ADMIN = 1373859142
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+ID_ADMIN = int(os.environ.get('ADMIN_ID', 0))
+
+if not TOKEN or not ID_ADMIN:
+    print("❌ ERROR: Configura TELEGRAM_TOKEN y ADMIN_ID")
+    exit(1)
 
 URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 ultimo_update_id = 0
+
+app = Flask(__name__)
+
+# ==================== ALERTAS - CONFIGURACIÓN ====================
+# Umbrales para alertas (cambio mínimo para notificar)
+UMBRALES = {
+    'VES': 1.0,    # Alerta si VES cambia ±1 Bs
+    'COP': 20.0,   # Alerta si COP cambia ±20 COP
+    'PEN': 0.20    # Alerta si PEN cambia ±0.20 PEN
+}
+
+# Guardar últimos precios para comparar
+ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
+usuarios_activos = set()
+
+# ==================== GESTIÓN DE USUARIOS ====================
+
+def guardar_usuario(chat_id):
+    """Guarda usuario para enviarle alertas"""
+    global usuarios_activos
+    if chat_id not in usuarios_activos:
+        usuarios_activos.add(chat_id)
+        print(f"✅ Nuevo usuario registrado: {chat_id}")
+
+def cargar_usuarios():
+    """Carga usuarios desde archivo"""
+    global usuarios_activos
+    try:
+        if os.path.exists("usuarios.txt"):
+            with open("usuarios.txt", "r") as f:
+                for linea in f:
+                    try:
+                        usuarios_activos.add(int(linea.strip()))
+                    except:
+                        pass
+            print(f"✅ {len(usuarios_activos)} usuarios cargados")
+    except:
+        pass
+
+def guardar_usuarios_archivo():
+    """Guarda usuarios en archivo"""
+    try:
+        with open("usuarios.txt", "w") as f:
+            for uid in usuarios_activos:
+                f.write(f"{uid}\n")
+    except:
+        pass
 
 # ==================== PRECIOS P2P REALES ====================
 
@@ -89,7 +142,6 @@ def obtener_precios_p2p_reales(fiat):
 # ==================== TASAS DE CAMBIO ====================
 
 def obtener_tasas():
-    """Obtiene tasas de cambio actualizadas"""
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         headers = {
@@ -117,6 +169,65 @@ def obtener_tasas():
     
     return None
 
+# ==================== 🔔 ALERTAS ====================
+
+def verificar_alertas(precios):
+    """Verifica si hubo cambios y envía alertas"""
+    global ultimos_precios, usuarios_activos
+    
+    if not precios:
+        return
+    
+    for moneda in ['VES', 'COP', 'PEN']:
+        if moneda not in precios or not precios[moneda]:
+            continue
+        
+        precio_actual = precios[moneda]['compra']
+        
+        # Si es la primera vez, guardar precio
+        if ultimos_precios[moneda] is None:
+            ultimos_precios[moneda] = precio_actual
+            print(f"📊 {moneda}: Precio inicial {precio_actual:.2f}")
+            continue
+        
+        # Calcular cambio
+        cambio = abs(precio_actual - ultimos_precios[moneda])
+        umbral = UMBRALES.get(moneda, 0)
+        
+        # Si el cambio supera el umbral, enviar alerta
+        if cambio >= umbral:
+            direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
+            emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
+            signo = "+" if precio_actual > ultimos_precios[moneda] else ""
+            cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
+            
+            mensaje = f"""
+{emoji} *🔔 ALERTA DE PRECIO {moneda}* {emoji}
+
+{direccion} en {signo}{cambio:.2f} {moneda}
+
+📊 *Detalles:*
+• Anterior: {ultimos_precios[moneda]:.2f}
+• Actual: {precio_actual:.2f}
+• Cambio: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)
+
+🕐 Hora: {datetime.now().strftime('%H:%M:%S')}
+👥 Enviado a {len(usuarios_activos)} usuarios
+"""
+            
+            # Enviar a TODOS los usuarios registrados
+            for usuario in list(usuarios_activos):
+                try:
+                    enviar_mensaje(usuario, mensaje)
+                    time.sleep(0.05)
+                except:
+                    pass
+            
+            print(f"🔔 Alerta {moneda} enviada a {len(usuarios_activos)} usuarios")
+            
+            # Actualizar precio guardado
+            ultimos_precios[moneda] = precio_actual
+
 # ==================== TELEGRAM ====================
 
 def enviar_mensaje(chat_id, texto, teclado=None):
@@ -135,7 +246,6 @@ def enviar_mensaje(chat_id, texto, teclado=None):
         return False
 
 def crear_teclado():
-    """Crea el teclado con los botones"""
     teclado = {
         "keyboard": [
             ["💰 Precio USDT"],
@@ -148,9 +258,6 @@ def crear_teclado():
     return teclado
 
 def mostrar_precios(chat_id, moneda=None):
-    """Muestra precios según la moneda seleccionada"""
-    
-    # Obtener precios actuales
     precios = {}
     for m in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_p2p_reales(m)
@@ -161,7 +268,6 @@ def mostrar_precios(chat_id, moneda=None):
         enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
         return
     
-    # Obtener tasas
     tasas = obtener_tasas()
     
     if moneda == 'USDT' or moneda is None:
@@ -188,7 +294,6 @@ def mostrar_precios(chat_id, moneda=None):
         mensaje += f"🔴 *VENTA:* {datos['venta']:.2f}\n"
         mensaje += f"📊 *Spread:* {datos['compra']-datos['venta']:.2f}\n"
         
-        # Comparación con BCV (solo para VES)
         if moneda == 'VES' and tasas:
             diff = datos['compra'] - tasas['usd']
             pct = (diff / tasas['usd']) * 100 if tasas['usd'] > 0 else 0
@@ -202,15 +307,11 @@ def mostrar_precios(chat_id, moneda=None):
         enviar_mensaje(chat_id, "❌ Moneda no disponible", crear_teclado())
 
 def mostrar_vs_bcv(chat_id):
-    """Muestra comparación USDT vs BCV"""
-    
-    # Obtener precios
     compra, venta = obtener_precios_p2p_reales('VES')
     if not compra or not venta:
         enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
         return
     
-    # Obtener tasas
     tasas = obtener_tasas()
     if not tasas:
         enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado())
@@ -236,21 +337,25 @@ def mostrar_vs_bcv(chat_id):
     
     enviar_mensaje(chat_id, mensaje, crear_teclado())
 
-# ==================== PROCESAR COMANDOS ====================
+# ==================== PROCESAR MENSAJES ====================
 
-def procesar_comando(chat_id, texto):
+def procesar_mensaje(chat_id, texto):
     print(f"📩 {texto}")
     
-    # Limpiar texto (quitar emojis)
+    # Guardar usuario para alertas
+    guardar_usuario(chat_id)
+    guardar_usuarios_archivo()
+    
     texto_limpio = texto.replace("💰", "").replace("🇻🇪", "").replace("🇨🇴", "").replace("🇵🇪", "").replace("📊", "").strip()
     
     if texto == '/start':
-        mensaje = """
+        mensaje = f"""
 🤖 *BOT USDT P2P + BCV* 🚀
 
-📊 *Precios en tiempo real:*
-💰 Precios EXACTOS de Binance P2P
-🏦 Tasas de cambio actualizadas
+🔔 *Alertas activas para TODOS*
+• 📈 SUBIDA: Te avisa cuando sube
+• 📉 BAJADA: Te avisa cuando baja
+• 👥 {len(usuarios_activos)} usuarios reciben alertas
 
 📱 *Usa los botones:*
 • Precio USDT - Todas las monedas
@@ -274,28 +379,39 @@ def procesar_comando(chat_id, texto):
     elif texto == '📊 vs BCV' or texto == '/bcv':
         mostrar_vs_bcv(chat_id)
     
-    elif texto == '/help':
-        mensaje = """
-📝 *Comandos disponibles:*
-/precios - Ver todos los precios
-/ves - Precio VES
-/cop - Precio COP
-/pen - Precio PEN
-/bcv - Comparación vs BCV
-"""
-        enviar_mensaje(chat_id, mensaje, crear_teclado())
-    
     else:
-        enviar_mensaje(chat_id, "❓ Usa los botones o /help para ayuda", crear_teclado())
+        enviar_mensaje(chat_id, "❓ Usa los botones o /start", crear_teclado())
 
-# ==================== CACHE ====================
-cache_precios = {}
+# ==================== WEBHOOK ====================
 
-def actualizar_cache():
-    global cache_precios
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        data = request.get_json()
+        if data and 'message' in data:
+            chat_id = data['message']['chat']['id']
+            texto = data['message'].get('text', '')
+            
+            if chat_id and texto:
+                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
+        
+        return "OK", 200
+    except Exception as e:
+        print(f"❌ Webhook error: {e}")
+        return "Error", 500
+
+@app.route('/')
+def home():
+    return f"🤖 Bot USDT P2P + BCV - Activo 24/7\n👥 {len(usuarios_activos)} usuarios registrados\n🔔 Alertas activas"
+
+# ==================== 🔄 ACTUALIZACIÓN CONTINUA ====================
+
+def actualizar_precios():
+    """Actualiza precios cada 60 segundos y verifica alertas"""
     while True:
         try:
-            print("\n🔄 Actualizando caché...")
+            print(f"\n🔄 Actualizando precios... {datetime.now().strftime('%H:%M:%S')}")
+            
             precios = {}
             for moneda in ['VES', 'COP', 'PEN']:
                 compra, venta = obtener_precios_p2p_reales(moneda)
@@ -303,64 +419,49 @@ def actualizar_cache():
                     precios[moneda] = {'compra': compra, 'venta': venta}
             
             if precios:
-                cache_precios = precios
-                print(f"  ✅ Cache: VES={precios.get('VES', {}).get('compra', 0):.2f}")
+                # Verificar alertas
+                verificar_alertas(precios)
+                print(f"  ✅ Precios actualizados: VES={precios.get('VES', {}).get('compra', 0):.2f}")
             
             time.sleep(60)
+            
         except Exception as e:
             print(f"  ❌ Error: {e}")
             time.sleep(60)
 
 # ==================== MAIN ====================
 
-def main():
-    global ultimo_update_id
-    
-    print("🚀 Bot iniciado en Pydroid 3")
+if __name__ == "__main__":
+    print("🚀 Bot iniciando en Railway...")
     print("=" * 40)
-    print("📊 Botónes: USDT, VES, COP, PEN, vs BCV")
+    print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
+    print(f"✅ ADMIN_ID: {ID_ADMIN if ID_ADMIN else 'FALTANTE'}")
+    
+    # Cargar usuarios guardados
+    cargar_usuarios()
+    print(f"👥 {len(usuarios_activos)} usuarios registrados")
     
     # Probar precios
+    print("\n📊 Probando conexión a Binance...")
     for moneda in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_p2p_reales(moneda)
         if compra and venta:
             print(f"  ✅ {moneda}: {compra:.2f} / {venta:.2f}")
+            ultimos_precios[moneda] = compra  # Guardar precio inicial
+        else:
+            print(f"  ❌ {moneda}: No disponible")
     
-    # Probar tasas
-    tasas = obtener_tasas()
-    if tasas:
-        print(f"  ✅ USD: {tasas['usd']:.2f} Bs")
+    print("\n🔔 Alertas configuradas:")
+    print(f"  VES: ±{UMBRALES['VES']} Bs")
+    print(f"  COP: ±{UMBRALES['COP']} COP")
+    print(f"  PEN: ±{UMBRALES['PEN']} PEN")
     
-    # Iniciar caché
-    threading.Thread(target=actualizar_cache, daemon=True).start()
+    # Iniciar hilo de actualización
+    threading.Thread(target=actualizar_precios, daemon=True).start()
     
-    print("\n✅ Bot iniciado")
+    print("\n✅ Bot listo en Railway")
     print("📱 Botones disponibles en Telegram")
     print("=" * 40)
     
-    while True:
-        try:
-            url = URL_TELEGRAM + "getUpdates"
-            params = {'offset': ultimo_update_id + 1, 'timeout': 10}
-            response = requests.get(url, params=params, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ok'):
-                    for update in data.get('result', []):
-                        ultimo_update_id = update.get('update_id', 0)
-                        message = update.get('message')
-                        if message:
-                            chat_id = message.get('chat', {}).get('id')
-                            texto = message.get('text', '')
-                            if chat_id and texto:
-                                threading.Thread(target=procesar_comando, args=(chat_id, texto)).start()
-            
-            time.sleep(1)
-            
-        except Exception as e:
-            print(f"❌ Error: {e}")
-            time.sleep(5)
-
-if __name__ == "__main__":
-    main()
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)

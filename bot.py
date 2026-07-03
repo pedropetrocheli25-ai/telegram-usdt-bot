@@ -6,8 +6,8 @@ from datetime import datetime
 from flask import Flask, request
 
 # ==================== CONFIGURACIÓN ====================
-TOKEN = os.environ.get('TELEGRAM_TOKEN')
-ID_ADMIN = int(os.environ.get('ADMIN_ID', 0))
+TOKEN = os.environ.get('8925407023:AAFcITHXtPYhNJ9-O4kZT73LaYpKtKp3pe4')
+ID_ADMIN = int(os.environ.get('1373859142', 0))
 
 if not TOKEN or not ID_ADMIN:
     print("❌ ERROR: Configura TELEGRAM_TOKEN y ADMIN_ID")

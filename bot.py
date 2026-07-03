@@ -8,8 +8,8 @@ from collections import deque
 from flask import Flask, request
 
 # ==================== CONFIGURACIÓN ====================
-TOKEN = os.environ.get('TELEGRAM_TOKEN')
-ID_ADMIN = os.environ.get('ADMIN_ID')
+TOKEN = os.environ.get('8925407023:AAFcITHXtPYhNJ9-O4kZT73LaYpKtKp3pe4')
+ID_ADMIN = os.environ.get('1373859142')
 
 if not TOKEN or not ID_ADMIN:
     print("❌ ERROR: Configura TELEGRAM_TOKEN y ADMIN_ID en Railway")
@@ -98,7 +98,7 @@ def crear_teclado():
         "keyboard": [
             ["💰 Precio USDT"],
             ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
-            ["🇵🇪 Precio PEN", "📊 vs BCV"],
+            ["🇵🇪 Precio PEN", "USDT vs BCV"],
             ["📈 Historial del día"]
         ],
         "resize_keyboard": True

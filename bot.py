@@ -3,12 +3,13 @@ import time
 import threading
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
+from collections import deque
 from flask import Flask, request
 
 # ==================== CONFIGURACIÓN ====================
-TOKEN = os.environ.get('8925407023:AAFcITHXtPYhNJ9-O4kZT73LaYpKtKp3pe4')
-ID_ADMIN = os.environ.get('1373859142')
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+ID_ADMIN = os.environ.get('ADMIN_ID')
 
 if not TOKEN or not ID_ADMIN:
     print("❌ ERROR: Configura TELEGRAM_TOKEN y ADMIN_ID en Railway")
@@ -31,6 +32,27 @@ ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 usuarios_activos = set()
 ARCHIVO_USUARIOS = "usuarios.txt"
 
+# ==================== CACHE E HISTORIAL ====================
+# Guarda los últimos 1440 precios (24 horas)
+historial = {
+    'VES': deque(maxlen=1440),
+    'COP': deque(maxlen=1440),
+    'PEN': deque(maxlen=1440)
+}
+
+# Guarda la hora de cada precio
+historial_tiempo = {
+    'VES': deque(maxlen=1440),
+    'COP': deque(maxlen=1440),
+    'PEN': deque(maxlen=1440)
+}
+
+# Precios de apertura del día
+precio_apertura = {'VES': None, 'COP': None, 'PEN': None}
+
+# Últimos precios para mostrar en /precios
+cache_precios = {}
+
 # ==================== GESTIÓN DE USUARIOS ====================
 
 def cargar_usuarios():
@@ -44,8 +66,8 @@ def cargar_usuarios():
                     except:
                         pass
             print(f"✅ {len(usuarios_activos)} usuarios cargados")
-    except Exception as e:
-        print(f"⚠️ Error cargando usuarios: {e}")
+    except:
+        print("📝 No hay usuarios guardados")
 
 def guardar_usuario(chat_id):
     global usuarios_activos
@@ -55,10 +77,32 @@ def guardar_usuario(chat_id):
             with open(ARCHIVO_USUARIOS, 'a') as f:
                 f.write(f"{chat_id}\n")
             print(f"✅ Nuevo usuario: {chat_id}")
-        except Exception as e:
-            print(f"⚠️ Error guardando usuario: {e}")
+        except:
+            pass
 
-# ==================== FUNCIONES DE PRECIOS ====================
+# ==================== FUNCIONES ====================
+
+def enviar_mensaje(chat_id, texto, teclado=None):
+    try:
+        url = URL_TELEGRAM + "sendMessage"
+        data = {"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"}
+        if teclado:
+            data["reply_markup"] = teclado
+        response = requests.post(url, json=data, timeout=10)
+        return response.status_code == 200
+    except:
+        return False
+
+def crear_teclado():
+    return {
+        "keyboard": [
+            ["💰 Precio USDT"],
+            ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
+            ["🇵🇪 Precio PEN", "📊 vs BCV"],
+            ["📈 Historial del día"]
+        ],
+        "resize_keyboard": True
+    }
 
 def obtener_precios_p2p_reales(fiat):
     try:
@@ -68,7 +112,6 @@ def obtener_precios_p2p_reales(fiat):
             'Content-Type': 'application/json'
         }
         
-        # COMPRA
         data = {
             "asset": "USDT",
             "fiat": fiat,
@@ -96,7 +139,6 @@ def obtener_precios_p2p_reales(fiat):
         except:
             pass
         
-        # VENTA
         data = {
             "asset": "USDT",
             "fiat": fiat,
@@ -131,36 +173,25 @@ def obtener_precios_p2p_reales(fiat):
             precio_compra, precio_venta = precio_venta, precio_compra
         
         return precio_compra, precio_venta
-    except Exception as e:
-        print(f"⚠️ Error obteniendo {fiat}: {e}")
+    except:
         return None, None
 
 def obtener_tasas():
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Accept': 'application/json'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            usd_to_ves = data.get('rates', {}).get('VES', 0)
-            eur_to_usd = data.get('rates', {}).get('EUR', 0)
-            eur_to_ves = usd_to_ves * eur_to_usd if usd_to_ves > 0 else 0
-            
-            if usd_to_ves > 0:
+            usd = data.get('rates', {}).get('VES', 0)
+            eur = data.get('rates', {}).get('EUR', 0)
+            if usd > 0:
                 return {
-                    'usd': usd_to_ves,
-                    'eur': eur_to_ves,
-                    'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'fuente': 'ExchangeRate API'
+                    'usd': usd,
+                    'eur': usd * eur if eur > 0 else usd * 0.92,
+                    'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
     except:
         pass
-    
     return None
 
 # ==================== ALERTAS ====================
@@ -210,34 +241,68 @@ def verificar_alertas(precios):
                 except:
                     pass
             
+            print(f"🔔 Alerta {moneda} enviada")
             ultimos_precios[moneda] = precio_actual
 
-# ==================== TELEGRAM ====================
+# ==================== GUARDAR HISTORIAL ====================
 
-def enviar_mensaje(chat_id, texto, teclado=None):
-    try:
-        url = URL_TELEGRAM + "sendMessage"
-        data = {
-            "chat_id": chat_id,
-            "text": texto,
-            "parse_mode": "Markdown"
-        }
-        if teclado:
-            data["reply_markup"] = teclado
-        response = requests.post(url, json=data, timeout=10)
-        return response.status_code == 200
-    except:
-        return False
+def guardar_historial(moneda, precio):
+    """Guarda el precio en el historial con timestamp"""
+    ahora = datetime.now()
+    historial[moneda].append(precio)
+    historial_tiempo[moneda].append(ahora.strftime('%H:%M'))
+    
+    # Guardar precio de apertura del día
+    if precio_apertura[moneda] is None:
+        precio_apertura[moneda] = precio
+        print(f"📊 {moneda} - Apertura del día: {precio:.2f}")
 
-def crear_teclado():
+def obtener_analisis_dia(moneda):
+    """Calcula estadísticas del día para una moneda"""
+    if not historial[moneda]:
+        return None
+    
+    precios = list(historial[moneda])
+    tiempos = list(historial_tiempo[moneda])
+    
+    if len(precios) < 2:
+        return None
+    
+    precio_actual = precios[-1]
+    precio_inicio = precios[0] if precio_apertura[moneda] is None else precio_apertura[moneda]
+    
+    # Si no hay apertura, usar el primer precio
+    if precio_apertura[moneda] is None:
+        precio_apertura[moneda] = precios[0]
+        precio_inicio = precios[0]
+    
+    cambio = precio_actual - precio_inicio
+    cambio_porcentaje = (cambio / precio_inicio) * 100 if precio_inicio != 0 else 0
+    
+    precio_max = max(precios)
+    precio_min = min(precios)
+    
+    # Tendencia (últimos 30 minutos)
+    tendencia = "↗️ Alcista" if len(precios) > 10 and precios[-1] > precios[-10] else "↘️ Bajista"
+    if len(precios) > 10 and abs(precios[-1] - precios[-10]) < 0.01:
+        tendencia = "➡️ Lateral"
+    
+    # Volatilidad
+    volatilidad = ((precio_max - precio_min) / precio_actual) * 100 if precio_actual != 0 else 0
+    
     return {
-        "keyboard": [
-            ["💰 Precio USDT"],
-            ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
-            ["🇵🇪 Precio PEN", "📊 vs BCV"]
-        ],
-        "resize_keyboard": True
+        'actual': precio_actual,
+        'apertura': precio_inicio,
+        'cambio': cambio,
+        'cambio_porcentaje': cambio_porcentaje,
+        'maximo': precio_max,
+        'minimo': precio_min,
+        'tendencia': tendencia,
+        'volatilidad': volatilidad,
+        'muestras': len(precios)
     }
+
+# ==================== MOSTRAR PRECIOS ====================
 
 def mostrar_precios(chat_id, moneda=None):
     precios = {}
@@ -250,6 +315,10 @@ def mostrar_precios(chat_id, moneda=None):
         enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
         return
     
+    # Guardar en cache
+    global cache_precios
+    cache_precios = precios
+    
     tasas = obtener_tasas()
     
     if moneda == 'USDT' or moneda is None:
@@ -259,7 +328,15 @@ def mostrar_precios(chat_id, moneda=None):
             mensaje += f"*{m}*\n"
             mensaje += f"  🟢 COMPRA: {datos['compra']:.2f}\n"
             mensaje += f"  🔴 VENTA: {datos['venta']:.2f}\n"
-            mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n\n"
+            mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n"
+            
+            # Mostrar cambio del día si hay historial
+            if moneda in historial and len(historial[moneda]) > 1:
+                analisis = obtener_analisis_dia(m)
+                if analisis:
+                    cambio_emoji = "📈" if analisis['cambio'] > 0 else "📉" if analisis['cambio'] < 0 else "➡️"
+                    mensaje += f"  {cambio_emoji} Día: {analisis['cambio']:+.2f} ({analisis['cambio_porcentaje']:+.1f}%)\n"
+            mensaje += "\n"
         
         if tasas:
             mensaje += f"🏦 *TASA DE CAMBIO*\n"
@@ -274,6 +351,18 @@ def mostrar_precios(chat_id, moneda=None):
         mensaje += f"🟢 COMPRA: {datos['compra']:.2f}\n"
         mensaje += f"🔴 VENTA: {datos['venta']:.2f}\n"
         mensaje += f"📊 Spread: {datos['compra']-datos['venta']:.2f}\n"
+        
+        # Análisis del día
+        analisis = obtener_analisis_dia(moneda)
+        if analisis:
+            mensaje += f"\n📊 *Análisis del día:*\n"
+            mensaje += f"  Apertura: {analisis['apertura']:.2f}\n"
+            mensaje += f"  Actual: {analisis['actual']:.2f}\n"
+            mensaje += f"  Cambio: {analisis['cambio']:+.2f} ({analisis['cambio_porcentaje']:+.1f}%)\n"
+            mensaje += f"  Máximo: {analisis['maximo']:.2f}\n"
+            mensaje += f"  Mínimo: {analisis['minimo']:.2f}\n"
+            mensaje += f"  Tendencia: {analisis['tendencia']}\n"
+            mensaje += f"  Volatilidad: {analisis['volatilidad']:.2f}%\n"
         
         if moneda == 'VES' and tasas:
             diff = datos['compra'] - tasas['usd']
@@ -313,7 +402,41 @@ def mostrar_vs_bcv(chat_id):
     
     mensaje += f"\n📊 *Spread USDT:* {compra-venta:.2f} Bs"
     
+    # Análisis del día para VES
+    analisis = obtener_analisis_dia('VES')
+    if analisis:
+        mensaje += f"\n\n📊 *Comportamiento del día:*\n"
+        mensaje += f"  Apertura: {analisis['apertura']:.2f}\n"
+        mensaje += f"  Actual: {analisis['actual']:.2f}\n"
+        mensaje += f"  Cambio: {analisis['cambio']:+.2f} ({analisis['cambio_porcentaje']:+.1f}%)\n"
+        mensaje += f"  Tendencia: {analisis['tendencia']}"
+    
     enviar_mensaje(chat_id, mensaje, crear_teclado())
+
+def mostrar_historial(chat_id):
+    """Muestra el historial y análisis del día"""
+    mensaje = f"📈 *HISTORIAL Y ANÁLISIS DEL DÍA*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+    mensaje += f"📅 {datetime.now().strftime('%d/%m/%Y')}\n\n"
+    
+    for moneda in ['VES', 'COP', 'PEN']:
+        analisis = obtener_analisis_dia(moneda)
+        if analisis:
+            mensaje += f"*{moneda}*\n"
+            mensaje += f"  Apertura: {analisis['apertura']:.2f}\n"
+            mensaje += f"  Actual: {analisis['actual']:.2f}\n"
+            cambio_emoji = "📈" if analisis['cambio'] > 0 else "📉" if analisis['cambio'] < 0 else "➡️"
+            mensaje += f"  {cambio_emoji} Cambio: {analisis['cambio']:+.2f} ({analisis['cambio_porcentaje']:+.1f}%)\n"
+            mensaje += f"  📈 Máximo: {analisis['maximo']:.2f}\n"
+            mensaje += f"  📉 Mínimo: {analisis['minimo']:.2f}\n"
+            mensaje += f"  🧭 Tendencia: {analisis['tendencia']}\n"
+            mensaje += f"  🌊 Volatilidad: {analisis['volatilidad']:.2f}%\n"
+            mensaje += f"  📊 Muestras: {analisis['muestras']}\n\n"
+        else:
+            mensaje += f"*{moneda}*: ⏳ Sin datos suficientes\n\n"
+    
+    enviar_mensaje(chat_id, mensaje, crear_teclado())
+
+# ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
     print(f"📩 {texto}")
@@ -328,9 +451,12 @@ def procesar_mensaje(chat_id, texto):
 👥 {len(usuarios_activos)} usuarios
 
 📱 *Botones:*
-• Precio USDT - Todas
+• Precio USDT - Todas las monedas
 • Precio VES/COP/PEN - Individual
 • vs BCV - Comparación
+• Historial del día - Análisis completo
+
+📊 *El bot guarda historial de precios 24/7*
 """
         enviar_mensaje(chat_id, mensaje, crear_teclado())
     
@@ -349,8 +475,37 @@ def procesar_mensaje(chat_id, texto):
     elif texto == '📊 vs BCV' or texto == '/bcv':
         mostrar_vs_bcv(chat_id)
     
+    elif texto == '📈 Historial del día' or texto == '/historial':
+        mostrar_historial(chat_id)
+    
     else:
         enviar_mensaje(chat_id, "Usa /start", crear_teclado())
+
+# ==================== ACTUALIZACIÓN CONTINUA ====================
+
+def actualizar_precios():
+    while True:
+        try:
+            print(f"\n🔄 Actualizando... {datetime.now().strftime('%H:%M:%S')}")
+            
+            precios = {}
+            for moneda in ['VES', 'COP', 'PEN']:
+                compra, venta = obtener_precios_p2p_reales(moneda)
+                if compra and venta:
+                    precios[moneda] = {'compra': compra, 'venta': venta}
+                    # Guardar en historial
+                    guardar_historial(moneda, compra)
+            
+            if precios:
+                verificar_alertas(precios)
+                print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
+                print(f"  📊 Muestras VES: {len(historial['VES'])}")
+            
+            time.sleep(60)
+            
+        except Exception as e:
+            print(f"  ❌ Error: {e}")
+            time.sleep(60)
 
 # ==================== WEBHOOK ====================
 
@@ -372,30 +527,10 @@ def webhook():
 
 @app.route('/')
 def home():
-    return f"🤖 Bot USDT P2P + BCV - Activo 24/7\n👥 {len(usuarios_activos)} usuarios registrados\n🔔 Alertas activas"
-
-# ==================== ACTUALIZACIÓN CONTINUA ====================
-
-def actualizar_precios():
-    while True:
-        try:
-            print(f"\n🔄 Actualizando... {datetime.now().strftime('%H:%M:%S')}")
-            
-            precios = {}
-            for moneda in ['VES', 'COP', 'PEN']:
-                compra, venta = obtener_precios_p2p_reales(moneda)
-                if compra and venta:
-                    precios[moneda] = {'compra': compra, 'venta': venta}
-            
-            if precios:
-                verificar_alertas(precios)
-                print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
-            
-            time.sleep(60)
-            
-        except Exception as e:
-            print(f"  ❌ Error: {e}")
-            time.sleep(60)
+    return f"""🤖 Bot USDT P2P - Activo 24/7
+👥 {len(usuarios_activos)} usuarios
+🔔 Alertas activas
+📊 Historial: {len(historial['VES'])} muestras VES"""
 
 # ==================== MAIN ====================
 
@@ -414,6 +549,8 @@ if __name__ == "__main__":
         if compra and venta:
             print(f"  ✅ {moneda}: {compra:.2f} / {venta:.2f}")
             ultimos_precios[moneda] = compra
+            # Guardar primer precio del historial
+            guardar_historial(moneda, compra)
         else:
             print(f"  ❌ {moneda}: No disponible")
     
@@ -421,6 +558,8 @@ if __name__ == "__main__":
     print(f"  VES: ±{UMBRALES['VES']} Bs")
     print(f"  COP: ±{UMBRALES['COP']} COP")
     print(f"  PEN: ±{UMBRALES['PEN']} PEN")
+    
+    print("\n📊 Historial activado (guarda 24h de precios)")
     
     # Iniciar hilo de actualización
     threading.Thread(target=actualizar_precios, daemon=True).start()

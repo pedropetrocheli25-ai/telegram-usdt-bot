@@ -2,6 +2,7 @@ import requests
 import time
 import os
 import threading
+import json
 from datetime import datetime
 from collections import deque
 from flask import Flask
@@ -28,30 +29,17 @@ UMBRALES = {
 }
 
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
+
+# ==================== USUARIOS EN MEMORIA ====================
 usuarios_activos = set()
-ARCHIVO_USUARIOS = "usuarios.txt"
-
-# ==================== HISTORIAL ====================
-historial = {
-    'VES': deque(maxlen=1440),
-    'COP': deque(maxlen=1440),
-    'PEN': deque(maxlen=1440)
-}
-precio_apertura = {'VES': None, 'COP': None, 'PEN': None}
-
-# ==================== GESTIÓN DE USUARIOS ====================
 
 def cargar_usuarios():
     global usuarios_activos
     try:
-        if os.path.exists(ARCHIVO_USUARIOS):
-            with open(ARCHIVO_USUARIOS, 'r') as f:
-                for linea in f:
-                    try:
-                        usuarios_activos.add(int(linea.strip()))
-                    except:
-                        pass
-            print(f"✅ {len(usuarios_activos)} usuarios cargados")
+        usuarios_json = os.environ.get('USUARIOS', '[]')
+        usuarios_lista = json.loads(usuarios_json)
+        usuarios_activos = set(usuarios_lista)
+        print(f"✅ {len(usuarios_activos)} usuarios cargados")
     except:
         print("📝 No hay usuarios guardados")
 
@@ -59,12 +47,11 @@ def guardar_usuario(chat_id):
     global usuarios_activos
     if chat_id not in usuarios_activos:
         usuarios_activos.add(chat_id)
-        try:
-            with open(ARCHIVO_USUARIOS, 'a') as f:
-                f.write(f"{chat_id}\n")
-            print(f"✅ Nuevo usuario: {chat_id}")
-        except:
-            pass
+        print(f"✅ Nuevo usuario registrado: {chat_id}")
+        print(f"👥 Total usuarios: {len(usuarios_activos)}")
+
+def obtener_usuarios():
+    return list(usuarios_activos)
 
 # ==================== FUNCIONES ====================
 
@@ -79,14 +66,23 @@ def enviar_mensaje(chat_id, texto, teclado=None):
     except:
         return False
 
-def crear_teclado():
+def crear_teclado(chat_id):
+    """
+    Crea teclado personalizado según si es ADMIN o no
+    """
+    teclado = [
+        ["💰 Precio USDT"],
+        ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
+        ["🇵🇪 Precio PEN", "📊 vs BCV"],
+        ["📈 Historial del día"]
+    ]
+    
+    # Si es ADMIN, mostrar botón de usuarios
+    if chat_id == ADMIN_ID:
+        teclado.append(["👥 Usuarios"])
+    
     return {
-        "keyboard": [
-            ["💰 Precio USDT"],
-            ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
-            ["🇵🇪 Precio PEN", "📊 vs BCV"],
-            ["📈 Historial del día"]
-        ],
+        "keyboard": teclado,
         "resize_keyboard": True
     }
 
@@ -163,12 +159,60 @@ def obtener_tasas():
         pass
     return None
 
+# ==================== HISTORIAL ====================
+historial = {
+    'VES': deque(maxlen=1440),
+    'COP': deque(maxlen=1440),
+    'PEN': deque(maxlen=1440)
+}
+precio_apertura = {'VES': None, 'COP': None, 'PEN': None}
+
+def guardar_historial(moneda, precio):
+    historial[moneda].append(precio)
+    if precio_apertura[moneda] is None:
+        precio_apertura[moneda] = precio
+
+def obtener_analisis_dia(moneda):
+    if not historial[moneda]:
+        return None
+    
+    precios = list(historial[moneda])
+    if len(precios) < 2:
+        return None
+    
+    precio_actual = precios[-1]
+    precio_inicio = precios[0]
+    
+    cambio = precio_actual - precio_inicio
+    cambio_porcentaje = (cambio / precio_inicio) * 100 if precio_inicio != 0 else 0
+    precio_max = max(precios)
+    precio_min = min(precios)
+    
+    tendencia = "↗️ Alcista" if len(precios) > 10 and precios[-1] > precios[-10] else "↘️ Bajista"
+    if len(precios) > 10 and abs(precios[-1] - precios[-10]) < 0.01:
+        tendencia = "➡️ Lateral"
+    
+    return {
+        'actual': precio_actual,
+        'apertura': precio_inicio,
+        'cambio': cambio,
+        'cambio_porcentaje': cambio_porcentaje,
+        'maximo': precio_max,
+        'minimo': precio_min,
+        'tendencia': tendencia,
+        'muestras': len(precios)
+    }
+
 # ==================== ALERTAS ====================
 
 def verificar_alertas(precios):
     global ultimos_precios
     
     if not precios:
+        return
+    
+    usuarios = obtener_usuarios()
+    if not usuarios:
         return
     
     for moneda in ['VES', 'COP', 'PEN']:
@@ -203,55 +247,15 @@ def verificar_alertas(precios):
 🕐 {datetime.now().strftime('%H:%M:%S')}
 """
             
-            for usuario in list(usuarios_activos):
+            for usuario in usuarios:
                 try:
                     enviar_mensaje(usuario, mensaje)
                     time.sleep(0.05)
                 except:
                     pass
             
-            print(f"🔔 Alerta {moneda} enviada")
+            print(f"🔔 Alerta {moneda} enviada a {len(usuarios)} usuarios")
             ultimos_precios[moneda] = precio_actual
-
-# ==================== HISTORIAL ====================
-
-def guardar_historial(moneda, precio):
-    ahora = datetime.now()
-    historial[moneda].append(precio)
-    if precio_apertura[moneda] is None:
-        precio_apertura[moneda] = precio
-
-def obtener_analisis_dia(moneda):
-    if not historial[moneda]:
-        return None
-    
-    precios = list(historial[moneda])
-    if len(precios) < 2:
-        return None
-    
-    precio_actual = precios[-1]
-    precio_inicio = precios[0]
-    
-    cambio = precio_actual - precio_inicio
-    cambio_porcentaje = (cambio / precio_inicio) * 100 if precio_inicio != 0 else 0
-    precio_max = max(precios)
-    precio_min = min(precios)
-    
-    # Tendencia (últimos 30 minutos)
-    tendencia = "↗️ Alcista" if len(precios) > 10 and precios[-1] > precios[-10] else "↘️ Bajista"
-    if len(precios) > 10 and abs(precios[-1] - precios[-10]) < 0.01:
-        tendencia = "➡️ Lateral"
-    
-    return {
-        'actual': precio_actual,
-        'apertura': precio_inicio,
-        'cambio': cambio,
-        'cambio_porcentaje': cambio_porcentaje,
-        'maximo': precio_max,
-        'minimo': precio_min,
-        'tendencia': tendencia,
-        'muestras': len(precios)
-    }
 
 # ==================== MOSTRAR PRECIOS ====================
 
@@ -263,7 +267,7 @@ def mostrar_precios(chat_id, moneda=None):
             precios[m] = {'compra': compra, 'venta': venta}
     
     if not precios:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado(chat_id))
         return
     
     tasas = obtener_tasas()
@@ -281,7 +285,7 @@ def mostrar_precios(chat_id, moneda=None):
             mensaje += f"  💵 USD: {tasas['usd']:.2f} Bs\n"
             mensaje += f"  💶 EUR: {tasas['eur']:.2f} Bs\n"
         
-        enviar_mensaje(chat_id, mensaje, crear_teclado())
+        enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
     
     elif moneda in precios:
         datos = precios[moneda]
@@ -302,17 +306,17 @@ def mostrar_precios(chat_id, moneda=None):
             pct = (diff / tasas['usd']) * 100 if tasas['usd'] > 0 else 0
             mensaje += f"\n📊 *vs BCV:* {diff:+.2f} Bs ({pct:+.1f}%)"
         
-        enviar_mensaje(chat_id, mensaje, crear_teclado())
+        enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
 
 def mostrar_vs_bcv(chat_id):
     compra, venta = obtener_precios_p2p_reales('VES')
     if not compra or not venta:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado(chat_id))
         return
     
     tasas = obtener_tasas()
     if not tasas:
-        enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado())
+        enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado(chat_id))
         return
     
     diff_compra = compra - tasas['usd']
@@ -331,7 +335,7 @@ def mostrar_vs_bcv(chat_id):
     if analisis:
         mensaje += f"\n📊 *Día:* {analisis['cambio']:+.2f} Bs ({analisis['cambio_porcentaje']:+.1f}%)"
     
-    enviar_mensaje(chat_id, mensaje, crear_teclado())
+    enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
 
 def mostrar_historial(chat_id):
     mensaje = f"📈 *HISTORIAL DEL DÍA*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
@@ -352,7 +356,7 @@ def mostrar_historial(chat_id):
         else:
             mensaje += f"*{moneda}*: ⏳ Sin datos\n\n"
     
-    enviar_mensaje(chat_id, mensaje, crear_teclado())
+    enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
 
 # ==================== PROCESAR MENSAJES ====================
 
@@ -376,7 +380,7 @@ def procesar_mensaje(chat_id, texto):
 📊 vs BCV - Comparación
 📈 Historial del día - Análisis completo
 """
-        enviar_mensaje(chat_id, mensaje, crear_teclado())
+        enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
     
     elif texto == '💰 Precio USDT' or texto == '/precios':
         mostrar_precios(chat_id, 'USDT')
@@ -396,8 +400,20 @@ def procesar_mensaje(chat_id, texto):
     elif texto == '📈 Historial del día' or texto == '/historial':
         mostrar_historial(chat_id)
     
+    # 👥 USUARIOS - SOLO ADMIN
+    elif texto == '👥 Usuarios' or texto == '/usuarios':
+        if chat_id == ADMIN_ID:
+            usuarios = obtener_usuarios()
+            if usuarios:
+                mensaje = f"👥 *USUARIOS REGISTRADOS*\n\nTotal: {len(usuarios)}\n\n"
+                for uid in usuarios:
+                    mensaje += f"• `{uid}`\n"
+            else:
+                mensaje = "📝 No hay usuarios registrados"
+            enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
+    
     else:
-        enviar_mensaje(chat_id, "Usa /start", crear_teclado())
+        enviar_mensaje(chat_id, "Usa /start", crear_teclado(chat_id))
 
 # ==================== POLLING ====================
 
@@ -433,6 +449,7 @@ def actualizar_precios():
     while True:
         try:
             print(f"\n🔄 Actualizando... {datetime.now().strftime('%H:%M:%S')}")
+            print(f"👥 Usuarios: {len(usuarios_activos)}")
             
             precios = {}
             for moneda in ['VES', 'COP', 'PEN']:
@@ -444,6 +461,8 @@ def actualizar_precios():
             if precios:
                 verificar_alertas(precios)
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
+            else:
+                print("  ❌ No se obtuvieron precios")
             
             time.sleep(60)
             
@@ -465,7 +484,7 @@ if __name__ == "__main__":
     print(f"✅ ADMIN_ID: {ADMIN_ID if ADMIN_ID else 'FALTANTE'}")
     
     cargar_usuarios()
-    print(f"👥 {len(usuarios_activos)} usuarios")
+    print(f"👥 {len(usuarios_activos)} usuarios en memoria")
     
     print("\n📊 Probando conexión...")
     for m in ['VES', 'COP', 'PEN']:
@@ -478,8 +497,10 @@ if __name__ == "__main__":
             print(f"  ❌ {m}: No disponible")
     
     print("\n🔔 Alertas activas")
-    print("📱 Botones: USDT, VES, COP, PEN, vs BCV, Historial")
+    print("📱 Botones visibles para todos: USDT, VES, COP, PEN, vs BCV, Historial")
+    print("🔒 Botón 'Usuarios' visible SOLO para ADMIN")
     
+    # Iniciar hilos
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()
     

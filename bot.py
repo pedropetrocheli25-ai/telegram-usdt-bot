@@ -1,22 +1,14 @@
 import requests
 import time
 import threading
-import os
 from datetime import datetime
-from flask import Flask, request
 
 # ==================== CONFIGURACIÓN ====================
-TOKEN = os.environ.get('TELEGRAM_TOKEN')
-ID_ADMIN = int(os.environ.get('ADMIN_ID', 0))
-
-if not TOKEN or not ID_ADMIN:
-    print("❌ ERROR: Configura TELEGRAM_TOKEN y ADMIN_ID")
-    exit(1)
+TOKEN = "8925407023:AAFcITHXtPYhNJ9-O4kZT73LaYpKtKp3pe4"
+ID_ADMIN = 1373859142
 
 URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 ultimo_update_id = 0
-
-app = Flask(__name__)
 
 # ==================== PRECIOS P2P REALES ====================
 
@@ -97,6 +89,7 @@ def obtener_precios_p2p_reales(fiat):
 # ==================== TASAS DE CAMBIO ====================
 
 def obtener_tasas():
+    """Obtiene tasas de cambio actualizadas"""
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         headers = {
@@ -142,6 +135,7 @@ def enviar_mensaje(chat_id, texto, teclado=None):
         return False
 
 def crear_teclado():
+    """Crea el teclado con los botones"""
     teclado = {
         "keyboard": [
             ["💰 Precio USDT"],
@@ -154,6 +148,9 @@ def crear_teclado():
     return teclado
 
 def mostrar_precios(chat_id, moneda=None):
+    """Muestra precios según la moneda seleccionada"""
+    
+    # Obtener precios actuales
     precios = {}
     for m in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_p2p_reales(m)
@@ -164,6 +161,7 @@ def mostrar_precios(chat_id, moneda=None):
         enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
         return
     
+    # Obtener tasas
     tasas = obtener_tasas()
     
     if moneda == 'USDT' or moneda is None:
@@ -190,6 +188,7 @@ def mostrar_precios(chat_id, moneda=None):
         mensaje += f"🔴 *VENTA:* {datos['venta']:.2f}\n"
         mensaje += f"📊 *Spread:* {datos['compra']-datos['venta']:.2f}\n"
         
+        # Comparación con BCV (solo para VES)
         if moneda == 'VES' and tasas:
             diff = datos['compra'] - tasas['usd']
             pct = (diff / tasas['usd']) * 100 if tasas['usd'] > 0 else 0
@@ -203,11 +202,15 @@ def mostrar_precios(chat_id, moneda=None):
         enviar_mensaje(chat_id, "❌ Moneda no disponible", crear_teclado())
 
 def mostrar_vs_bcv(chat_id):
+    """Muestra comparación USDT vs BCV"""
+    
+    # Obtener precios
     compra, venta = obtener_precios_p2p_reales('VES')
     if not compra or not venta:
         enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
         return
     
+    # Obtener tasas
     tasas = obtener_tasas()
     if not tasas:
         enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado())
@@ -233,34 +236,12 @@ def mostrar_vs_bcv(chat_id):
     
     enviar_mensaje(chat_id, mensaje, crear_teclado())
 
-# ==================== WEBHOOK ====================
+# ==================== PROCESAR COMANDOS ====================
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        data = request.get_json()
-        if data and 'message' in data:
-            chat_id = data['message']['chat']['id']
-            texto = data['message'].get('text', '')
-            
-            if chat_id and texto:
-                # Procesar en segundo plano
-                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
-        
-        return "OK", 200
-    except Exception as e:
-        print(f"❌ Webhook error: {e}")
-        return "Error", 500
-
-@app.route('/')
-def home():
-    return "🤖 Bot USDT P2P + BCV - Activo 24/7"
-
-# ==================== PROCESAR MENSAJES ====================
-
-def procesar_mensaje(chat_id, texto):
+def procesar_comando(chat_id, texto):
     print(f"📩 {texto}")
     
+    # Limpiar texto (quitar emojis)
     texto_limpio = texto.replace("💰", "").replace("🇻🇪", "").replace("🇨🇴", "").replace("🇵🇪", "").replace("📊", "").strip()
     
     if texto == '/start':
@@ -293,29 +274,93 @@ def procesar_mensaje(chat_id, texto):
     elif texto == '📊 vs BCV' or texto == '/bcv':
         mostrar_vs_bcv(chat_id)
     
+    elif texto == '/help':
+        mensaje = """
+📝 *Comandos disponibles:*
+/precios - Ver todos los precios
+/ves - Precio VES
+/cop - Precio COP
+/pen - Precio PEN
+/bcv - Comparación vs BCV
+"""
+        enviar_mensaje(chat_id, mensaje, crear_teclado())
+    
     else:
-        enviar_mensaje(chat_id, "❓ Usa los botones o /start", crear_teclado())
+        enviar_mensaje(chat_id, "❓ Usa los botones o /help para ayuda", crear_teclado())
+
+# ==================== CACHE ====================
+cache_precios = {}
+
+def actualizar_cache():
+    global cache_precios
+    while True:
+        try:
+            print("\n🔄 Actualizando caché...")
+            precios = {}
+            for moneda in ['VES', 'COP', 'PEN']:
+                compra, venta = obtener_precios_p2p_reales(moneda)
+                if compra and venta:
+                    precios[moneda] = {'compra': compra, 'venta': venta}
+            
+            if precios:
+                cache_precios = precios
+                print(f"  ✅ Cache: VES={precios.get('VES', {}).get('compra', 0):.2f}")
+            
+            time.sleep(60)
+        except Exception as e:
+            print(f"  ❌ Error: {e}")
+            time.sleep(60)
 
 # ==================== MAIN ====================
 
-if __name__ == "__main__":
-    print("🚀 Bot iniciando en Railway...")
+def main():
+    global ultimo_update_id
+    
+    print("🚀 Bot iniciado en Pydroid 3")
     print("=" * 40)
-    print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
-    print(f"✅ ADMIN_ID: {ID_ADMIN if ID_ADMIN else 'FALTANTE'}")
+    print("📊 Botónes: USDT, VES, COP, PEN, vs BCV")
     
     # Probar precios
-    print("\n📊 Probando conexión a Binance...")
     for moneda in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_p2p_reales(moneda)
         if compra and venta:
             print(f"  ✅ {moneda}: {compra:.2f} / {venta:.2f}")
-        else:
-            print(f"  ❌ {moneda}: No disponible")
     
-    print("\n✅ Bot listo en Railway")
+    # Probar tasas
+    tasas = obtener_tasas()
+    if tasas:
+        print(f"  ✅ USD: {tasas['usd']:.2f} Bs")
+    
+    # Iniciar caché
+    threading.Thread(target=actualizar_cache, daemon=True).start()
+    
+    print("\n✅ Bot iniciado")
     print("📱 Botones disponibles en Telegram")
     print("=" * 40)
     
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    while True:
+        try:
+            url = URL_TELEGRAM + "getUpdates"
+            params = {'offset': ultimo_update_id + 1, 'timeout': 10}
+            response = requests.get(url, params=params, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    for update in data.get('result', []):
+                        ultimo_update_id = update.get('update_id', 0)
+                        message = update.get('message')
+                        if message:
+                            chat_id = message.get('chat', {}).get('id')
+                            texto = message.get('text', '')
+                            if chat_id and texto:
+                                threading.Thread(target=procesar_comando, args=(chat_id, texto)).start()
+            
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            time.sleep(5)
+
+if __name__ == "__main__":
+    main()

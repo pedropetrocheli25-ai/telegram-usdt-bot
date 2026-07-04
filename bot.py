@@ -6,39 +6,28 @@ from datetime import datetime
 from flask import Flask
 
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
-ADMIN_ID = os.environ.get('ADMIN_ID')
 
 if not TOKEN:
     print("ERROR: TELEGRAM_TOKEN no configurado")
     exit(1)
 
-ADMIN_ID = int(ADMIN_ID) if ADMIN_ID else 0
 URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 ultimo_update_id = 0
 
 app = Flask(__name__)
 
-# ==================== CACHÉ ====================
-cache_precios = {}
-cache_tiempo = {}
-CACHE_DURACION = 30
+def enviar_mensaje(chat_id, texto):
+    try:
+        url = URL_TELEGRAM + "sendMessage"
+        data = {"chat_id": chat_id, "text": texto}
+        response = requests.post(url, json=data, timeout=10)
+        print(f"✅ Mensaje enviado a {chat_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Error enviando: {e}")
+        return False
 
-def obtener_precios_con_cache(fiat):
-    global cache_precios, cache_tiempo
-    ahora = time.time()
-    
-    if fiat in cache_precios and fiat in cache_tiempo:
-        if ahora - cache_tiempo[fiat] < CACHE_DURACION:
-            return cache_precios[fiat]['compra'], cache_precios[fiat]['venta']
-    
-    compra, venta = obtener_precios_binance(fiat)
-    if compra and venta:
-        cache_precios[fiat] = {'compra': compra, 'venta': venta}
-        cache_tiempo[fiat] = ahora
-    
-    return compra, venta
-
-def obtener_precios_binance(fiat):
+def obtener_precios(fiat):
     try:
         url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
@@ -86,53 +75,43 @@ def obtener_tasas():
         pass
     return None
 
-def enviar_mensaje(chat_id, texto):
-    try:
-        url = URL_TELEGRAM + "sendMessage"
-        data = {"chat_id": chat_id, "text": texto}
-        response = requests.post(url, json=data, timeout=10)
-        print(f"✅ Mensaje enviado a {chat_id}")
-        return True
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return False
-
-def procesar_mensaje(chat_id, texto):
-    print(f"📩 Mensaje: {texto}")
+def procesar_comando(chat_id, texto):
+    print(f"📩 Mensaje recibido: {texto}")
     
     if texto == '/start':
-        mensaje = "🤖 BOT USDT P2P ACTIVO\n\nComandos:\n/precios - Ver precios\n/tasas - Ver tasa BCV"
+        mensaje = "🤖 BOT USDT ACTIVO!\n\nComandos:\n/precios - Ver precios\n/tasas - Ver tasa BCV"
         enviar_mensaje(chat_id, mensaje)
     
     elif texto == '/precios':
-        mensaje = f"PRECIOS USDT P2P\n{datetime.now().strftime('%H:%M:%S')}\n\n"
+        mensaje = f"💰 PRECIOS USDT P2P\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
         for m in ['VES', 'COP', 'PEN']:
-            compra, venta = obtener_precios_con_cache(m)
+            compra, venta = obtener_precios(m)
             if compra and venta:
-                mensaje += f"{m}\n  COMPRA: {compra:.2f}\n  VENTA: {venta:.2f}\n\n"
+                mensaje += f"*{m}*\n  COMPRA: {compra:.2f}\n  VENTA: {venta:.2f}\n\n"
             else:
-                mensaje += f"{m}: No disponible\n\n"
+                mensaje += f"*{m}*: ❌ No disponible\n\n"
         
         tasa = obtener_tasas()
         if tasa:
-            mensaje += f"TASA BCV\nUSD: {tasa:.2f} Bs"
+            mensaje += f"🏦 TASA BCV\nUSD: {tasa:.2f} Bs"
         
         enviar_mensaje(chat_id, mensaje)
     
     elif texto == '/tasas':
         tasa = obtener_tasas()
         if tasa:
-            mensaje = f"TASA BCV\nUSD: {tasa:.2f} Bs"
+            mensaje = f"🏦 TASA BCV\nUSD: {tasa:.2f} Bs"
         else:
-            mensaje = "Tasa no disponible"
+            mensaje = "❌ Tasa no disponible"
         enviar_mensaje(chat_id, mensaje)
     
     else:
-        enviar_mensaje(chat_id, "Usa /start")
+        enviar_mensaje(chat_id, "❓ Usa /start para comandos")
 
-def recibir_mensajes():
+def polling():
     global ultimo_update_id
-    print("Polling iniciado...")
+    print("🔄 Polling iniciado...")
+    
     while True:
         try:
             url = URL_TELEGRAM + "getUpdates"
@@ -149,12 +128,13 @@ def recibir_mensajes():
                             chat_id = message.get('chat', {}).get('id')
                             texto = message.get('text', '')
                             if chat_id and texto:
-                                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
+                                print(f"📨 Procesando: {texto}")
+                                threading.Thread(target=procesar_comando, args=(chat_id, texto)).start()
             
             time.sleep(1)
             
         except Exception as e:
-            print(f"Error polling: {e}")
+            print(f"❌ Error polling: {e}")
             time.sleep(5)
 
 @app.route('/')
@@ -162,18 +142,23 @@ def home():
     return "Bot activo"
 
 if __name__ == "__main__":
-    print("Bot iniciando en Railway...")
-    print(f"TOKEN: {'OK' if TOKEN else 'FALTA'}")
+    print("🚀 Bot iniciando en Railway...")
+    print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
     
-    print("\nProbando conexion a Binance...")
+    print("\n📊 Probando conexión a Binance...")
     for m in ['VES', 'COP', 'PEN']:
-        compra, venta = obtener_precios_binance(m)
+        compra, venta = obtener_precios(m)
         if compra and venta:
-            print(f"  {m}: {compra:.2f} / {venta:.2f}")
+            print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
+        else:
+            print(f"  ❌ {m}: No disponible")
     
-    print("\nIniciando polling...")
-    threading.Thread(target=recibir_mensajes, daemon=True).start()
+    print("\n🔄 Iniciando polling...")
+    threading.Thread(target=polling, daemon=True).start()
     
-    print("Bot listo!")
+    print("✅ Bot listo! Esperando mensajes...")
+    print("📱 Envía /start a tu bot en Telegram")
+    print("=" * 40)
+    
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

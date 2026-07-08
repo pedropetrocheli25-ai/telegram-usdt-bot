@@ -86,7 +86,8 @@ def crear_teclado():
         ["💰 Precio USDT"],
         ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
         ["🇵🇪 Precio PEN", "🪙 Tether USDT vs BCV"],
-        ["📈 Historial VES"]
+        ["📈 Historial VES", "🔍 Mejores Anuncios"],
+        ["💱 Tasas de Cambio"]  # <--- NUEVO BOTÓN AGREGADO
     ]
     return {"keyboard": teclado, "resize_keyboard": True}
 
@@ -251,6 +252,105 @@ def obtener_tasas():
     except:
         pass
     return None
+
+# ==================== NUEVA FUNCIÓN: CALCULAR TASAS DE CAMBIO ====================
+
+def calcular_tasas_cambio():
+    """
+    Calcula todas las tasas de cambio según las especificaciones:
+    
+    1. Tasa Perú - Venezuela: Venta VES / Compra PEN = Resultado * 0.95
+    2. Tasa Venezuela - Perú: El mismo resultado de la anterior y le suma 15 Bs más
+    3. Tasa Venezuela - Brasil: Compra VES / 5.10 = Resultado * 1.05
+    4. Tasa Perú - Colombia: 1 / (Compra PEN / Venta COP) = Resultado * 0.95
+    5. Tasa Colombia - Perú: Compra COP / Venta PEN = resultado * 1.06
+    6. Tasa Colombia - Brasil: Compra COP / 5.10 = Resultado * 1.06
+    """
+    # Obtener precios P2P
+    compra_ves, venta_ves = obtener_precios_p2p_reales('VES')
+    compra_cop, venta_cop = obtener_precios_p2p_reales('COP')
+    compra_pen, venta_pen = obtener_precios_p2p_reales('PEN')
+    
+    # Verificar que todos los precios estén disponibles
+    if not all([compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]):
+        return None
+    
+    tasas = {}
+    
+    # 1. Tasa Perú - Venezuela
+    # Venta VES / Compra PEN = Resultado * 0.95
+    if compra_pen > 0:
+        tasas['peru_venezuela'] = (venta_ves / compra_pen) * 0.95
+    
+    # 2. Tasa Venezuela - Perú
+    # El mismo resultado de la anterior y le suma 15 Bs más
+    if 'peru_venezuela' in tasas:
+        tasas['venezuela_peru'] = tasas['peru_venezuela'] + 15
+    
+    # 3. Tasa Venezuela - Brasil
+    # Compra VES / 5.10 = Resultado * 1.05
+    if compra_ves > 0:
+        tasas['venezuela_brasil'] = (compra_ves / 5.10) * 1.05
+    
+    # 4. Tasa Perú - Colombia
+    # 1 / (Compra PEN / Venta COP) = Resultado * 0.95
+    if compra_pen > 0 and venta_cop > 0:
+        tasas['peru_colombia'] = (1 / (compra_pen / venta_cop)) * 0.95
+    
+    # 5. Tasa Colombia - Perú
+    # Compra COP / Venta PEN = resultado * 1.06
+    if compra_cop > 0 and venta_pen > 0:
+        tasas['colombia_peru'] = (compra_cop / venta_pen) * 1.06
+    
+    # 6. Tasa Colombia - Brasil
+    # Compra COP / 5.10 = Resultado * 1.06
+    if compra_cop > 0:
+        tasas['colombia_brasil'] = (compra_cop / 5.10) * 1.06
+    
+    return tasas
+
+# ==================== NUEVA FUNCIÓN: MOSTRAR TASAS DE CAMBIO ====================
+
+def mostrar_tasas_cambio(chat_id):
+    """
+    Muestra todas las tasas de cambio calculadas
+    """
+    tasas = calcular_tasas_cambio()
+    
+    if not tasas:
+        mensaje = "❌ No se pudieron calcular las tasas. Verifica que los precios P2P estén disponibles."
+        enviar_mensaje(chat_id, mensaje, crear_teclado())
+        return
+    
+    mensaje = "💱 *TASAS DE CAMBIO*\n"
+    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    
+    # Mostrar cada tasa calculada
+    if 'peru_venezuela' in tasas:
+        mensaje += f"🇵🇪→🇻🇪 *Perú - Venezuela:*\n"
+        mensaje += f"  {tasas['peru_venezuela']:.2f} Bs (Venta VES/Compra PEN)*0.95\n\n"
+    
+    if 'venezuela_peru' in tasas:
+        mensaje += f"🇻🇪→🇵🇪 *Venezuela - Perú:*\n"
+        mensaje += f"  {tasas['venezuela_peru']:.2f} Bs (Tasa anterior + 15 Bs)\n\n"
+    
+    if 'venezuela_brasil' in tasas:
+        mensaje += f"🇻🇪→🇧🇷 *Venezuela - Brasil:*\n"
+        mensaje += f"  {tasas['venezuela_brasil']:.2f} Bs (Compra VES/5.10)*1.05\n\n"
+    
+    if 'peru_colombia' in tasas:
+        mensaje += f"🇵🇪→🇨🇴 *Perú - Colombia:*\n"
+        mensaje += f"  {tasas['peru_colombia']:.2f} Bs (1/(Compra PEN/Venta COP))*0.95\n\n"
+    
+    if 'colombia_peru' in tasas:
+        mensaje += f"🇨🇴→🇵🇪 *Colombia - Perú:*\n"
+        mensaje += f"  {tasas['colombia_peru']:.2f} Bs (Compra COP/Venta PEN)*1.06\n\n"
+    
+    if 'colombia_brasil' in tasas:
+        mensaje += f"🇨🇴→🇧🇷 *Colombia - Brasil:*\n"
+        mensaje += f"  {tasas['colombia_brasil']:.2f} Bs (Compra COP/5.10)*1.06"
+    
+    enviar_mensaje(chat_id, mensaje, crear_teclado())
 
 # ==================== HISTORIAL (SOLO VES) ====================
 
@@ -423,6 +523,7 @@ def procesar_mensaje(chat_id, texto):
 🪙 Tether USDT vs BCV - BCV + 0.50%
 📈 Historial VES - Solo VES (24h)
 🔍 Mejores Anuncios - Filtro 200,000 VES
+💱 Tasas de Cambio - Tasas internacionales
 
 ⚡ *Umbrales de alerta:* VES: 1 Bs | COP: 100 | PEN: 0.10
 🕐 *Hora de Caracas (UTC -4)*
@@ -449,6 +550,9 @@ def procesar_mensaje(chat_id, texto):
     
     elif texto == '🔍 Mejores Anuncios' or texto == '/anuncios':
         mostrar_mejores_anuncios(chat_id)
+    
+    elif texto == '💱 Tasas de Cambio' or texto == '/tasas':  # <--- NUEVA CONDICIÓN AGREGADA
+        mostrar_tasas_cambio(chat_id)
     
     else:
         enviar_mensaje(chat_id, "Usa /start", crear_teclado())
@@ -551,33 +655,25 @@ if __name__ == "__main__":
         else:
             print(f"  ❌ {m}: No disponible")
     
-    print("\n🔍 Probando filtro de 200,000 VES...")
+    print("\n🔍 Probando filtro de anuncios...")
     anuncios = obtener_anuncios_con_limite('VES', 200000)
     if anuncios:
         print(f"  ✅ {len(anuncios)} anuncios encontrados con mínimo >= 200,000 VES")
-        for a in anuncios[:3]:
-            print(f"     - {a['nombre']}: {a['precio']:.2f} Bs (min: {a['minimo']:,.0f})")
     else:
-        print("  ❌ No hay anuncios con ese filtro")
+        print("  ❌ No se encontraron anuncios con el filtro")
     
-    print("\n🔔 Alertas SOLO para el ADMIN:")
-    print(f"  VES: ±{UMBRALES['VES']} Bs")
-    print(f"  COP: ±{UMBRALES['COP']} COP")
-    print(f"  PEN: ±{UMBRALES['PEN']} PEN")
+    print("\n💱 Probando tasas de cambio...")  # <--- NUEVA PRUEBA AGREGADA
+    tasas = calcular_tasas_cambio()
+    if tasas:
+        for key, value in tasas.items():
+            print(f"  ✅ {key}: {value:.2f}")
+    else:
+        print("  ❌ No se pudieron calcular las tasas")
     
-    print("\n📱 Botones:")
-    print("  - Precio USDT, VES, COP, PEN")
-    print("  - Tether USDT vs BCV (BCV + 0.50%)")
-    print("  - Historial VES (solo VES)")
-    print("  - Mejores Anuncios (filtro 200,000 VES)")
-    
+    print("\n🚀 Iniciando hilos...")
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()
     threading.Thread(target=mantener_activo, daemon=True).start()
     
-    print("\n✅ Bot listo!")
-    print("🕐 Hora de Caracas (UTC -4)")
-    print("=" * 40)
-    
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    print("🌐 Iniciando servidor Flask...")
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))

@@ -6,7 +6,7 @@ from datetime import datetime
 from collections import deque
 from flask import Flask
 
-# ==================== CONFIGURACIÓN DE ZONA HORARIA ====================
+# ==================== CONFIGURACIÓN ====================
 os.environ['TZ'] = 'America/Caracas'
 time.tzset()
 
@@ -23,25 +23,16 @@ ultimo_update_id = 0
 
 app = Flask(__name__)
 
-# ==================== ALERTAS (SOLO ADMIN) ====================
-UMBRALES = {
-    'VES': 1.0,
-    'COP': 100.0,
-    'PEN': 0.10
-}
-
+# ==================== VARIABLES GLOBALES ====================
+UMBRALES = {'VES': 1.0, 'COP': 100.0, 'PEN': 0.10}
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
+precios_cache = {}
 usuarios_activos = set()
 ARCHIVO_USUARIOS = "usuarios.txt"
-
-# ==================== CACHÉ DE PRECIOS PARA TASAS ====================
-precios_cache = {}
-
-# ==================== HISTORIAL (SOLO VES) ====================
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
 
-# ==================== GESTIÓN DE USUARIOS ====================
+# ==================== FUNCIONES DE USUARIOS ====================
 
 def cargar_usuarios():
     global usuarios_activos
@@ -68,10 +59,7 @@ def guardar_usuario(chat_id):
         except:
             pass
 
-def obtener_usuarios():
-    return list(usuarios_activos)
-
-# ==================== FUNCIONES ====================
+# ==================== FUNCIONES PRINCIPALES ====================
 
 def enviar_mensaje(chat_id, texto, teclado=None):
     try:
@@ -99,7 +87,6 @@ def obtener_precios_p2p_reales(fiat):
         url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
         
-        # COMPRA - SELL (gente vendiendo USDT)
         data = {"asset": "USDT", "fiat": fiat, "tradeType": "SELL", "page": 1, "rows": 10, "payTypes": []}
         compra = None
         try:
@@ -120,7 +107,6 @@ def obtener_precios_p2p_reales(fiat):
         except:
             pass
         
-        # VENTA - BUY (gente comprando USDT)
         data = {"asset": "USDT", "fiat": fiat, "tradeType": "BUY", "page": 1, "rows": 10, "payTypes": []}
         venta = None
         try:
@@ -149,12 +135,9 @@ def obtener_precios_p2p_reales(fiat):
     except:
         return None, None
 
-# ==================== OBTENER ANUNCIOS CON FILTRO DE 200,000 VES ====================
+# ==================== ANUNCIOS ====================
 
 def obtener_anuncios_con_limite(fiat, limite_minimo=200000):
-    """
-    Obtiene anuncios P2P que acepten un monto mínimo >= 200,000 VES
-    """
     try:
         url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
@@ -179,7 +162,6 @@ def obtener_anuncios_con_limite(fiat, limite_minimo=200000):
                         min_amount = float(anuncio['adv']['minSingleTransAmount'])
                         price = float(anuncio['adv']['price'])
                         
-                        # Filtrar por límite mínimo de 200,000 VES
                         if min_amount >= limite_minimo:
                             anuncios_filtrados.append({
                                 'precio': price,
@@ -192,17 +174,13 @@ def obtener_anuncios_con_limite(fiat, limite_minimo=200000):
                     except:
                         pass
                 
-                # Ordenar por precio (mejor precio primero)
                 anuncios_filtrados.sort(key=lambda x: x['precio'])
-                return anuncios_filtrados[:5]  # Solo mostrar los 5 mejores
+                return anuncios_filtrados[:5]
     except:
         pass
     return []
 
 def mostrar_mejores_anuncios(chat_id):
-    """
-    Muestra los mejores anuncios con límite mínimo >= 200,000 VES
-    """
     fiat = 'VES'
     limite = 200000
     
@@ -213,7 +191,6 @@ def mostrar_mejores_anuncios(chat_id):
         enviar_mensaje(chat_id, mensaje, crear_teclado())
         return
     
-    # Obtener el precio de compra actual para comparar
     compra, venta = obtener_precios_p2p_reales('VES')
     precio_promedio = compra if compra else 0
     
@@ -224,7 +201,6 @@ def mostrar_mejores_anuncios(chat_id):
         mensaje += f"📊 *Precio de referencia:* {precio_promedio:.2f} Bs\n\n"
     
     for i, a in enumerate(anuncios, 1):
-        # Calcular diferencia con el precio de referencia
         diff = a['precio'] - precio_promedio if precio_promedio > 0 else 0
         diff_emoji = "📈" if diff > 0 else "📉" if diff < 0 else "➡️"
         
@@ -256,16 +232,12 @@ def obtener_tasas():
         pass
     return None
 
-# ==================== TASAS DE CAMBIO (USANDO CACHÉ) ====================
+# ==================== TASAS DE CAMBIO ====================
 
 def calcular_tasas_desde_cache():
-    """
-    Calcula las tasas usando SOLO el caché, sin hacer peticiones a Binance
-    """
     global precios_cache
     
     if not precios_cache:
-        print("⚠️ Caché vacío")
         return None
     
     compra_ves = precios_cache.get('VES', {}).get('compra')
@@ -276,52 +248,28 @@ def calcular_tasas_desde_cache():
     venta_pen = precios_cache.get('PEN', {}).get('venta')
     
     if None in [compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]:
-        print("❌ Faltan precios en caché")
         return None
     
-    # Calcular tasas según especificaciones
     tasas = {}
-    
-    # 1. Tasa Perú - Venezuela
-    # Venta VES / Compra PEN = Resultado * 0.95
     tasas['peru_venezuela'] = (venta_ves / compra_pen) * 0.95
-    
-    # 2. Tasa Venezuela - Perú
-    # El mismo resultado de la anterior y le suma 15 Bs más
     tasas['venezuela_peru'] = tasas['peru_venezuela'] + 15
-    
-    # 3. Tasa Venezuela - Brasil
-    # Compra VES / 5.10 = Resultado * 1.05
     tasas['venezuela_brasil'] = (compra_ves / 5.10) * 1.05
-    
-    # 4. Tasa Perú - Colombia
-    # 1 / (Compra PEN / Venta COP) = Resultado * 0.95
     tasas['peru_colombia'] = (1 / (compra_pen / venta_cop)) * 0.95
-    
-    # 5. Tasa Colombia - Perú
-    # Compra COP / Venta PEN = resultado * 1.06
     tasas['colombia_peru'] = (compra_cop / venta_pen) * 1.06
-    
-    # 6. Tasa Colombia - Brasil
-    # Compra COP / 5.10 = Resultado * 1.06
     tasas['colombia_brasil'] = (compra_cop / 5.10) * 1.06
     
     return tasas
 
 def mostrar_tasas_cambio(chat_id):
-    """
-    Muestra las tasas usando SOLO el caché, sin hacer nuevas peticiones
-    """
     tasas = calcular_tasas_desde_cache()
     
     if not tasas:
-        mensaje = "❌ No hay precios en caché. Espera 1 minuto a que se actualicen."
+        mensaje = "❌ No hay precios en caché. Espera 1 minuto."
         enviar_mensaje(chat_id, mensaje, crear_teclado())
         return
     
     mensaje = "💱 *TASAS DE CAMBIO*\n"
-    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
-    mensaje += f"📊 Usando precios en caché\n\n"
+    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
     
     mensaje += f"🇵🇪→🇻🇪 *Perú - Venezuela:*\n"
     mensaje += f"  {tasas['peru_venezuela']:.2f} Bs\n\n"
@@ -343,7 +291,7 @@ def mostrar_tasas_cambio(chat_id):
     
     enviar_mensaje(chat_id, mensaje, crear_teclado())
 
-# ==================== HISTORIAL (SOLO VES) ====================
+# ==================== HISTORIAL ====================
 
 def guardar_historial_ves(precio):
     global precio_apertura_ves
@@ -377,7 +325,7 @@ def obtener_analisis_ves():
         'muestras': len(precios)
     }
 
-# ==================== ALERTAS (SOLO ADMIN) ====================
+# ==================== ALERTAS ====================
 
 def verificar_alertas(precios):
     global ultimos_precios
@@ -443,7 +391,7 @@ def mostrar_precios(chat_id, moneda=None):
         mensaje += f"📊 Spread: {datos['compra']-datos['venta']:.2f}\n"
         enviar_mensaje(chat_id, mensaje, crear_teclado())
 
-# ==================== TETHER USDT VS BCV ====================
+# ==================== TETHER VS BCV ====================
 
 def mostrar_tether_vs_bcv(chat_id):
     compra, venta = obtener_precios_p2p_reales('VES')
@@ -557,4 +505,121 @@ def recibir_mensajes():
         try:
             url = URL_TELEGRAM + "getUpdates"
             params = {'offset': ultimo_update_id + 1, 'timeout': 30}
-            response = requests.get(url, params=params, timeo
+            response = requests.get(url, params=params, timeout=35)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    for update in data.get('result', []):
+                        ultimo_update_id = update.get('update_id', 0)
+                        message = update.get('message')
+                        if message:
+                            chat_id = message.get('chat', {}).get('id')
+                            texto = message.get('text', '')
+                            if chat_id and texto:
+                                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
+            
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"❌ Error polling: {e}")
+            time.sleep(5)
+
+# ==================== ACTUALIZACIÓN CONTINUA ====================
+
+def actualizar_precios():
+    global precios_cache
+    
+    while True:
+        try:
+            print(f"\n🔄 Actualizando... {datetime.now().strftime('%H:%M:%S')}")
+            print(f"👥 Usuarios: {len(usuarios_activos)}")
+            
+            precios = {}
+            for moneda in ['VES', 'COP', 'PEN']:
+                compra, venta = obtener_precios_p2p_reales(moneda)
+                if compra and venta:
+                    precios[moneda] = {'compra': compra, 'venta': venta}
+                    if moneda == 'VES':
+                        guardar_historial_ves(compra)
+            
+            if precios:
+                precios_cache = precios.copy()
+                verificar_alertas(precios)
+                print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
+                print(f"  ✅ COP: {precios.get('COP', {}).get('compra', 0):.2f}")
+                print(f"  ✅ PEN: {precios.get('PEN', {}).get('compra', 0):.2f}")
+            else:
+                print("  ❌ No se obtuvieron precios")
+            
+            time.sleep(60)
+            
+        except Exception as e:
+            print(f"  ❌ Error: {e}")
+            time.sleep(60)
+
+# ==================== MANTENER ACTIVO ====================
+
+def mantener_activo():
+    while True:
+        try:
+            url = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'localhost')}/"
+            requests.get(url, timeout=10)
+            print(f"💓 Keep alive: {datetime.now().strftime('%H:%M:%S')}")
+        except:
+            pass
+        time.sleep(300)
+
+# ==================== RUTA FLASK ====================
+
+@app.route('/')
+def home():
+    return f"✅ Bot activo 24/7\n👥 {len(usuarios_activos)} usuarios\n📊 {len(historial_ves)} muestras VES\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
+
+# ==================== MAIN ====================
+
+if __name__ == "__main__":
+    print("🚀 Bot iniciando en Railway...")
+    print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
+    print(f"✅ ADMIN_ID: {ADMIN_ID if ADMIN_ID else 'FALTANTE'}")
+    print(f"🕐 Zona horaria: Caracas (UTC -4)")
+    print(f"🕐 Hora actual: {datetime.now().strftime('%H:%M:%S')}")
+    
+    cargar_usuarios()
+    print(f"👥 {len(usuarios_activos)} usuarios en memoria")
+    
+    print("\n📊 Probando conexión a Binance...")
+    for m in ['VES', 'COP', 'PEN']:
+        compra, venta = obtener_precios_p2p_reales(m)
+        if compra and venta:
+            print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
+            ultimos_precios[m] = compra
+            if m == 'VES':
+                guardar_historial_ves(compra)
+        else:
+            print(f"  ❌ {m}: No disponible")
+    
+    print("\n🔍 Probando filtro de anuncios...")
+    anuncios = obtener_anuncios_con_limite('VES', 200000)
+    if anuncios:
+        print(f"  ✅ {len(anuncios)} anuncios encontrados con mínimo >= 200,000 VES")
+    else:
+        print("  ❌ No se encontraron anuncios con el filtro")
+    
+    print("\n💱 Inicializando caché de tasas...")
+    for m in ['VES', 'COP', 'PEN']:
+        compra, venta = obtener_precios_p2p_reales(m)
+        if compra and venta:
+            precios_cache[m] = {'compra': compra, 'venta': venta}
+    if precios_cache:
+        print(f"  ✅ Caché inicializado con {len(precios_cache)} monedas")
+    else:
+        print("  ❌ No se pudo inicializar el caché")
+    
+    print("\n🚀 Iniciando hilos...")
+    threading.Thread(target=recibir_mensajes, daemon=True).start()
+    threading.Thread(target=actualizar_precios, daemon=True).start()
+    threading.Thread(target=mantener_activo, daemon=True).start()
+    
+    print("🌐 Iniciando servidor Flask...")
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))

@@ -69,7 +69,7 @@ def guardar_usuario(chat_id):
 def obtener_usuarios():
     return list(usuarios_activos)
 
-# ==================== FUNCIONES ====================
+# ==================== FUNCIONES ENVIAR ====================
 
 def enviar_mensaje(chat_id, texto, teclado=None):
     try:
@@ -161,36 +161,30 @@ def obtener_precios_p2p_reales(fiat):
     except:
         return None, None
 
-# ==================== CONSULTA BCV CORREGIDA ====================
+# ==================== CONSULTA SOLO BCV USD ====================
 
-def obtener_tasas_bcv():
-    """Obtiene de forma precisa las tasas oficiales USD y EUR de DolarApi"""
+def obtener_bcv_usd_oficial():
+    """Obtiene única y exclusivamente el precio oficial del BCV USD de DolarApi"""
     try:
-        # Endpoints corregidos según la documentación oficial de DolarApi para Venezuela
-        url_usd = "https://ve.dolarapi.com/v1/dolares/oficial"
-        r_usd = requests.get(url_usd, timeout=8)
-        
-        url_eur = "https://ve.dolarapi.com/v1/euros/oficial"
-        r_eur = requests.get(url_eur, timeout=8)
-        
-        bcv_usd = None
-        bcv_eur = None
-        
-        if r_usd.status_code == 200:
-            bcv_usd = float(r_usd.json().get('promedio', 0))
-            
-        if r_eur.status_code == 200:
-            bcv_eur = float(r_eur.json().get('promedio', 0))
-            
-        if bcv_usd:
-            final_eur = bcv_eur if bcv_eur else (bcv_usd * 0.92)
-            return {
-                'usd': bcv_usd,
-                'eur': final_eur,
-                'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-    except Exception as e:
-        print(f"❌ Error al consultar DolarApi: {e}")
+        url = "https://ve.dolarapi.com/v1/dolares/oficial"
+        r = requests.get(url, timeout=6)
+        if r.status_code == 200:
+            val = float(r.json().get('promedio', 0))
+            if val > 0:
+                return val
+    except:
+        pass
+    
+    # Respaldo alternativo por si falla el primer endpoint
+    try:
+        url_alt = "https://ve.dolarapi.com/v1/dolares"
+        r = requests.get(url_alt, timeout=6)
+        if r.status_code == 200:
+            for item in r.json():
+                if item.get('id') == 'oficial':
+                    return float(item.get('promedio', 0))
+    except:
+        pass
     return None
 
 # ==================== HISTORIAL (SOLO VES) ====================
@@ -275,23 +269,21 @@ def verificar_alertas(precios):
         
         ultimos_precios[moneda] = precio_actual
 
-# ==================== MOSTRAR PRECIOS ====================
+# ==================== MOSTRAR PRECIOS (SOLO BINANCE P2P) ====================
 
 def mostrar_precios(chat_id, moneda=None):
-    precios = {}
-    for m in ['VES', 'COP', 'PEN']:
-        compra, venta = obtener_precios_p2p_reales(m)
-        if compra and venta:
-            precios[m] = {'compra': compra, 'venta': venta}
-            
-    if not precios:
-        enviar_mensaje(chat_id, "⏳ Error al obtener los precios P2P de Binance...", crear_teclado())
-        return
-    
-    # MODIFICADO: El botón "Precio USDT" ahora muestra SOLO Compra y Venta consolidado de VES, COP y PEN de Binance P2P
     if moneda == 'USDT' or moneda is None:
-        mensaje = f"💰 *PRECIOS USDT P2P CONSOLIDADO*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-        
+        precios = {}
+        for m in ['VES', 'COP', 'PEN']:
+            compra, venta = obtener_precios_p2p_reales(m)
+            if compra and venta:
+                precios[m] = {'compra': compra, 'venta': venta}
+                
+        if not precios:
+            enviar_mensaje(chat_id, "⏳ Error al obtener los precios P2P de Binance...", crear_teclado())
+            return
+            
+        mensaje = f"💰 *PRECIOS USDT BINANCE P2P*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
         for m in ['VES', 'COP', 'PEN']:
             if m in precios:
                 datos = precios[m]
@@ -301,43 +293,43 @@ def mostrar_precios(chat_id, moneda=None):
                 mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n\n"
                 
         enviar_logo_tether(chat_id, mensaje)
-    
-    elif moneda in precios:
-        datos = precios[moneda]
-        mensaje = f"💰 *PRECIO {moneda}*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-        mensaje += f"🟢 COMPRA: {datos['compra']:.2f}\n"
-        mensaje += f"🔴 VENTA: {datos['venta']:.2f}\n"
-        mensaje += f"📊 Spread: {datos['compra']-datos['venta']:.2f}\n"
-        enviar_mensaje(chat_id, mensaje, crear_teclado())
+        return
 
-# ==================== TETHER USDT VS BCV ====================
+    compra, venta = obtener_precios_p2p_reales(moneda)
+    if compra and venta:
+        mensaje = f"💰 *PRECIO {moneda}*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+        mensaje += f"🟢 COMPRA: {compra:.2f}\n"
+        mensaje += f"🔴 VENTA: {venta:.2f}\n"
+        mensaje += f"📊 Spread: {compra-venta:.2f}\n"
+        enviar_mensaje(chat_id, mensaje, crear_teclado())
+    else:
+        enviar_mensaje(chat_id, f"⏳ Error al obtener el precio de {moneda} de Binance...", crear_teclado())
+
+# ==================== TETHER USDT VS BCV CORREGIDO ====================
 
 def mostrar_tether_vs_bcv(chat_id):
-    # Obtener precios P2P de Binance para Venezuela
+    # 1. Obtener precio P2P de Binance de Venezuela
     compra, venta = obtener_precios_p2p_reales('VES')
     if not compra or not venta:
         enviar_mensaje(chat_id, "⏳ Error al obtener precio de Binance P2P...", crear_teclado())
         return
-    
-    # Obtener tasas del Banco Central (con endpoints fijos en plural)
-    tasas = obtener_tasas_bcv()
-    if not tasas:
-        enviar_mensaje(chat_id, "⚠️ Error al conectar con el servidor de tasas oficiales BCV.", crear_teclado())
+        
+    # 2. Obtener tasa BCV USD oficial
+    bcv_usd = obtener_bcv_usd_oficial()
+    if not bcv_usd:
+        enviar_mensaje(chat_id, "⚠️ Servidor de tasas BCV no disponible. Intente de nuevo.", crear_teclado())
         return
-    
-    bcv_usd = tasas['usd']
-    bcv_eur = tasas['eur']
-    
-    # Calcular: USD + 0.50%
+        
+    # 3. Calcular: BCV USD + 0.50%
     bcv_con_porcentaje = bcv_usd * 1.005
     
-    # Calcular diferencial analítico
+    # 4. Calcular diferenciales matemáticos solicitados
     diff_venta = venta - bcv_con_porcentaje
     pct_venta = (diff_venta / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
     
+    # 5. Estructurar mensaje analítico limpio
     mensaje = f"🪙 *TETHER USDT vs BCV*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
     mensaje += f"🏦 *BCV USD Oficial:* {bcv_usd:.2f} Bs\n"
-    mensaje += f"🏦 *BCV EUR Oficial:* {bcv_eur:.2f} Bs\n\n"
     mensaje += f"📈 *BCV USD + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n"
     mensaje += f"🔴 *VENTA USDT P2P:* {venta:.2f} Bs\n\n"
     
@@ -388,12 +380,12 @@ def procesar_mensaje(chat_id, texto):
 👥 {len(usuarios_activos)} usuarios registrados
 
 📱 *Botones:*
-💰 Precio USDT - Todas las monedas
+💰 Precio USDT - Todas las monedas (VES, COP, PEN)
 🇻🇪 Precio VES - Solo VES
 🇨🇴 Precio COP - Solo COP
 🇵🇪 Precio PEN - Solo PEN
-🪙 Tether USDT vs BCV - BCV + 0.50%
-📈 Historial VES - Solo VES (24h)
+🪙 Tether USDT vs BCV - Analítico BCV USD + 0.50%
+📈 Historial VES - Analítica VES (24h)
 
 🕐 *Hora de Caracas (UTC -4)*
 """
@@ -410,7 +402,7 @@ def procesar_mensaje(chat_id, texto):
     
     elif texto == '🇵🇪 Precio PEN' or texto == '/pen':
         mostrar_precios(chat_id, 'PEN')
-    
+        
     elif texto == '🪙 Tether USDT vs BCV' or texto == '/tether':
         mostrar_tether_vs_bcv(chat_id)
     
@@ -467,77 +459,4 @@ def actualizar_precios():
             
             if precios:
                 verificar_alertas(precios)
-                print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
-                print(f"  ✅ COP: {precios.get('COP', {}).get('compra', 0):.2f}")
-                print(f"  ✅ PEN: {precios.get('PEN', {}).get('compra', 0):.2f}")
-            else:
-                print("  ❌ No se obtuvieron precios")
-            
-            time.sleep(60)
-            
-        except Exception as e:
-            print(f"  ❌ Error: {e}")
-            time.sleep(60)
-
-# ==================== MANTENER ACTIVO ====================
-
-def mantener_activo():
-    while True:
-        try:
-            url = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'localhost')}/"
-            requests.get(url, timeout=10)
-            print(f"💓 Keep alive: {datetime.now().strftime('%H:%M:%S')}")
-        except:
-            pass
-        time.sleep(300)
-
-# ==================== FLASK ====================
-
-@app.route('/')
-def home():
-    return f"✅ Bot activo 24/7\n👥 {len(usuarios_activos)} usuarios\n📊 {len(historial_ves)} muestras VES\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
-
-# ==================== MAIN ====================
-
-if __name__ == "__main__":
-    print("🚀 Bot iniciando en Railway...")
-    print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
-    print(f"✅ ADMIN_ID: {ADMIN_ID if ADMIN_ID else 'FALTANTE'}")
-    print(f"🕐 Zona horaria: Caracas (UTC -4)")
-    print(f"🕐 Hora actual: {datetime.now().strftime('%H:%M:%S')}")
-    
-    cargar_usuarios()
-    print(f"👥 {len(usuarios_activos)} usuarios en memoria")
-    
-    print("\n📊 Probando conexión a Binance...")
-    for m in ['VES', 'COP', 'PEN']:
-        compra, venta = obtener_precios_p2p_reales(m)
-        if compra and venta:
-            print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
-            precios_base[m] = compra
-            ultimos_precios[m] = compra
-            if m == 'VES':
-                guardar_historial_ves(compra)
-        else:
-            print(f"  ❌ {m}: No disponible")
-    
-    print("\n🔔 Alertas SOLO para el ADMIN:")
-    print(f"  VES: ±{UMBRALES['VES']:.1f} Bs desde precio base")
-    print(f"  COP: ±{UMBRALES['COP']:.0f} COP desde precio base")
-    print(f"  PEN: ±{UMBRALES['PEN']:.2f} PEN desde precio base")
-    
-    print("\n📱 Botones:")
-    print("  - Precio USDT, VES, COP, PEN")
-    print("  - Tether USDT vs BCV (BCV + 0.50%)")
-    print("  - Historial VES (solo VES)")
-    
-    threading.Thread(target=recibir_mensajes, daemon=True).start()
-    threading.Thread(target=actualizar_precios, daemon=True).start()
-    threading.Thread(target=mantener_activo, daemon=True).start()
-    
-    print("\n✅ Bot listo!")
-    print("🕐 Hora de Caracas (UTC -4)")
-    print("=" * 40)
-    
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+                print(f"  ✅ VES:

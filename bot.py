@@ -25,9 +25,9 @@ app = Flask(__name__)
 
 # ==================== ALERTAS (SOLO ADMIN) ====================
 UMBRALES = {
-    'VES': 3.0,
-    'COP': 60.0,
-    'PEN': 0.60
+    'VES': 1.0,
+    'COP': 100.0,
+    'PEN': 0.10
 }
 
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
@@ -95,6 +95,7 @@ def obtener_precios_p2p_reales(fiat):
         url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
         
+        # COMPRA - SELL (gente vendiendo USDT)
         data = {"asset": "USDT", "fiat": fiat, "tradeType": "SELL", "page": 1, "rows": 10, "payTypes": []}
         compra = None
         try:
@@ -115,6 +116,7 @@ def obtener_precios_p2p_reales(fiat):
         except:
             pass
         
+        # VENTA - BUY (gente comprando USDT)
         data = {"asset": "USDT", "fiat": fiat, "tradeType": "BUY", "page": 1, "rows": 10, "payTypes": []}
         venta = None
         try:
@@ -142,6 +144,95 @@ def obtener_precios_p2p_reales(fiat):
         return compra, venta
     except:
         return None, None
+
+# ==================== OBTENER ANUNCIOS CON FILTRO DE 200,000 VES ====================
+
+def obtener_anuncios_con_limite(fiat, limite_minimo=200000):
+    """
+    Obtiene anuncios P2P que acepten un monto mínimo >= 200,000 VES
+    """
+    try:
+        url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+        headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+        
+        data = {
+            "asset": "USDT",
+            "fiat": fiat,
+            "tradeType": "SELL",
+            "page": 1,
+            "rows": 10,
+            "payTypes": [],
+            "proMerchant": False
+        }
+        
+        response = requests.post(url, json=data, headers=headers, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('data'):
+                anuncios_filtrados = []
+                for anuncio in result['data']:
+                    try:
+                        min_amount = float(anuncio['adv']['minSingleTransAmount'])
+                        price = float(anuncio['adv']['price'])
+                        
+                        # Filtrar por límite mínimo de 200,000 VES
+                        if min_amount >= limite_minimo:
+                            anuncios_filtrados.append({
+                                'precio': price,
+                                'minimo': min_amount,
+                                'maximo': float(anuncio['adv']['maxSingleTransAmount']),
+                                'disponible': float(anuncio['adv']['quantity']),
+                                'nombre': anuncio.get('advertiser', {}).get('nickName', 'Desconocido'),
+                                'porcentaje': anuncio.get('advertiser', {}).get('tradeCount', 'N/A')
+                            })
+                    except:
+                        pass
+                
+                # Ordenar por precio (mejor precio primero)
+                anuncios_filtrados.sort(key=lambda x: x['precio'])
+                return anuncios_filtrados[:5]  # Solo mostrar los 5 mejores
+    except:
+        pass
+    return []
+
+def mostrar_mejores_anuncios(chat_id):
+    """
+    Muestra los mejores anuncios con límite mínimo >= 200,000 VES
+    """
+    fiat = 'VES'
+    limite = 200000
+    
+    anuncios = obtener_anuncios_con_limite(fiat, limite)
+    
+    if not anuncios:
+        mensaje = f"❌ No hay anuncios en {fiat} con límite mínimo >= {limite:,.0f} VES"
+        enviar_mensaje(chat_id, mensaje, crear_teclado())
+        return
+    
+    # Obtener el precio de compra actual para comparar
+    compra, venta = obtener_precios_p2p_reales('VES')
+    precio_promedio = compra if compra else 0
+    
+    mensaje = f"🔍 *MEJORES ANUNCIOS {fiat}* (mínimo >= {limite:,.0f} VES)\n"
+    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    
+    if precio_promedio > 0:
+        mensaje += f"📊 *Precio de referencia:* {precio_promedio:.2f} Bs\n\n"
+    
+    for i, a in enumerate(anuncios, 1):
+        # Calcular diferencia con el precio de referencia
+        diff = a['precio'] - precio_promedio if precio_promedio > 0 else 0
+        diff_emoji = "📈" if diff > 0 else "📉" if diff < 0 else "➡️"
+        
+        mensaje += f"{i}. *{a['nombre']}*\n"
+        mensaje += f"  💰 Precio: {a['precio']:.2f} Bs\n"
+        mensaje += f"  📊 Min: {a['minimo']:,.0f} | Max: {a['maximo']:,.0f} VES\n"
+        mensaje += f"  📦 Disponible: {a['disponible']:.2f} USDT\n"
+        if diff != 0:
+            mensaje += f"  {diff_emoji} vs ref: {diff:+.2f} Bs\n"
+        mensaje += "\n"
+    
+    enviar_mensaje(chat_id, mensaje, crear_teclado())
 
 def obtener_tasas():
     try:
@@ -331,8 +422,9 @@ def procesar_mensaje(chat_id, texto):
 🇵🇪 Precio PEN - Solo PEN
 🪙 Tether USDT vs BCV - BCV + 0.50%
 📈 Historial VES - Solo VES (24h)
+🔍 Mejores Anuncios - Filtro 200,000 VES
 
-⚡ *Umbrales de alerta:* VES: 3 Bs | COP: 60 | PEN: 0.60
+⚡ *Umbrales de alerta:* VES: 1 Bs | COP: 100 | PEN: 0.10
 🕐 *Hora de Caracas (UTC -4)*
 """
         enviar_mensaje(chat_id, mensaje, crear_teclado())
@@ -354,6 +446,9 @@ def procesar_mensaje(chat_id, texto):
     
     elif texto == '📈 Historial VES' or texto == '/historial':
         mostrar_historial_ves(chat_id)
+    
+    elif texto == '🔍 Mejores Anuncios' or texto == '/anuncios':
+        mostrar_mejores_anuncios(chat_id)
     
     else:
         enviar_mensaje(chat_id, "Usa /start", crear_teclado())
@@ -456,6 +551,15 @@ if __name__ == "__main__":
         else:
             print(f"  ❌ {m}: No disponible")
     
+    print("\n🔍 Probando filtro de 200,000 VES...")
+    anuncios = obtener_anuncios_con_limite('VES', 200000)
+    if anuncios:
+        print(f"  ✅ {len(anuncios)} anuncios encontrados con mínimo >= 200,000 VES")
+        for a in anuncios[:3]:
+            print(f"     - {a['nombre']}: {a['precio']:.2f} Bs (min: {a['minimo']:,.0f})")
+    else:
+        print("  ❌ No hay anuncios con ese filtro")
+    
     print("\n🔔 Alertas SOLO para el ADMIN:")
     print(f"  VES: ±{UMBRALES['VES']} Bs")
     print(f"  COP: ±{UMBRALES['COP']} COP")
@@ -465,6 +569,7 @@ if __name__ == "__main__":
     print("  - Precio USDT, VES, COP, PEN")
     print("  - Tether USDT vs BCV (BCV + 0.50%)")
     print("  - Historial VES (solo VES)")
+    print("  - Mejores Anuncios (filtro 200,000 VES)")
     
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()

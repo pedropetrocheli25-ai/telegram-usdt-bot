@@ -24,12 +24,15 @@ ultimo_update_id = 0
 app = Flask(__name__)
 
 # ==================== ALERTAS (SOLO ADMIN) ====================
+# Umbrales de cambio absoluto desde el precio base
 UMBRALES = {
-    'VES': 3.0,
-    'COP': 60.0,
-    'PEN': 0.60
+    'VES': 1.0,    # Alerta si cambia ±1.0 Bs
+    'COP': 50.0,   # Alerta si cambia ±50 COP
+    'PEN': 0.10    # Alerta si cambia ±0.10 PEN
 }
 
+# Precios base de referencia (se establecen al iniciar)
+precios_base = {'VES': None, 'COP': None, 'PEN': None}
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 usuarios_activos = set()
 ARCHIVO_USUARIOS = "usuarios.txt"
@@ -160,23 +163,48 @@ def obtener_precios_p2p_reales(fiat):
     except:
         return None, None
 
-def obtener_tasas():
+def obtener_bcv_usd():
+    """Obtiene la tasa oficial USD del BCV desde DolarToday"""
+    try:
+        url = "https://s3.amazonaws.com/dolartoday/data.json"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            bcv = data.get('USD_VEF', {}).get('promedio')
+            if bcv and bcv > 0:
+                return float(bcv)
+    except:
+        pass
+    return None
+
+def obtener_eur_usd():
+    """Obtiene la tasa EUR/USD desde ExchangeRate-API"""
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            usd = data.get('rates', {}).get('VES', 0)
             eur = data.get('rates', {}).get('EUR', 0)
-            if usd > 0:
-                return {
-                    'usd': usd,
-                    'eur': usd * eur if eur > 0 else usd * 0.92,
-                    'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
+            if eur > 0:
+                return float(eur)
     except:
         pass
     return None
+
+def obtener_tasas_bcv():
+    """Obtiene USD y EUR del BCV"""
+    bcv_usd = obtener_bcv_usd()
+    if not bcv_usd:
+        return None
+    
+    eur_usd = obtener_eur_usd()
+    bcv_eur = bcv_usd * eur_usd if eur_usd else bcv_usd * 0.92
+    
+    return {
+        'usd': bcv_usd,
+        'eur': bcv_eur,
+        'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
 
 # ==================== HISTORIAL (SOLO VES) ====================
 
@@ -215,39 +243,54 @@ def obtener_analisis_ves():
 # ==================== ALERTAS (SOLO ADMIN) ====================
 
 def verificar_alertas(precios):
-    global ultimos_precios
+    global precios_base, ultimos_precios
+    
     if not precios:
         return
     
     for moneda in ['VES', 'COP', 'PEN']:
         if moneda not in precios or not precios[moneda]:
             continue
+        
         precio_actual = precios[moneda]['compra']
-        if ultimos_precios[moneda] is None:
+        
+        # Establecer precio base si no existe
+        if precios_base[moneda] is None:
+            precios_base[moneda] = precio_actual
             ultimos_precios[moneda] = precio_actual
+            print(f"📊 Precio base {moneda}: {precio_actual:.2f}")
             continue
-        cambio = abs(precio_actual - ultimos_precios[moneda])
+        
+        # Calcular cambio desde el precio base
+        cambio_absoluto = precio_actual - precios_base[moneda]
+        cambio_porcentaje = (cambio_absoluto / precios_base[moneda]) * 100 if precios_base[moneda] != 0 else 0
+        
+        # Verificar si superó el umbral
         umbral = UMBRALES.get(moneda, 0)
-        if cambio >= umbral:
-            direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
-            emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
-            signo = "+" if precio_actual > ultimos_precios[moneda] else ""
-            cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
+        if abs(cambio_absoluto) >= umbral:
+            direccion = "📈 SUBIÓ" if cambio_absoluto > 0 else "📉 BAJÓ"
+            emoji = "🟢" if cambio_absoluto > 0 else "🔴"
+            signo = "+" if cambio_absoluto > 0 else ""
+            
             mensaje = f"""
 {emoji} *🔔 ALERTA {moneda}* {emoji}
 
-{direccion} en {signo}{cambio:.2f}
+{direccion} desde el precio base
 
 📊 *Detalles:*
-• Anterior: {ultimos_precios[moneda]:.2f}
-• Actual: {precio_actual:.2f}
-• Cambio: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)
+• Precio Base: {precios_base[moneda]:.2f}
+• Precio Actual: {precio_actual:.2f}
+• Cambio: {signo}{cambio_absoluto:.2f} ({signo}{cambio_porcentaje:.1f}%)
 
 🕐 {datetime.now().strftime('%H:%M:%S')}
 """
             enviar_mensaje(ADMIN_ID, mensaje)
             print(f"🔔 Alerta {moneda} enviada al ADMIN")
-            ultimos_precios[moneda] = precio_actual
+            
+            # Actualizar precio base para la siguiente alerta
+            precios_base[moneda] = precio_actual
+        
+        ultimos_precios[moneda] = precio_actual
 
 # ==================== MOSTRAR PRECIOS ====================
 
@@ -262,13 +305,21 @@ def mostrar_precios(chat_id, moneda=None):
         return
     
     if moneda == 'USDT' or moneda is None:
+        # Obtener tasas BCV
+        tasas = obtener_tasas_bcv()
+        bcv_usd_texto = f"{tasas['usd']:.2f} Bs" if tasas else "No disponible"
+        bcv_eur_texto = f"{tasas['eur']:.2f} Bs" if tasas else "No disponible"
+        
         mensaje = f"💰 *PRECIOS USDT P2P*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+        mensaje += f"🏦 *BCV USD:* {bcv_usd_texto}\n"
+        mensaje += f"🏦 *BCV EUR:* {bcv_eur_texto}\n\n"
+        
         for m, datos in precios.items():
             mensaje += f"*{m}*\n"
             mensaje += f"  🟢 COMPRA: {datos['compra']:.2f}\n"
             mensaje += f"  🔴 VENTA: {datos['venta']:.2f}\n"
             mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n\n"
-        enviar_logo_tether(chat_id, mensaje)  # <-- LOGO AQUÍ
+        enviar_logo_tether(chat_id, mensaje)
     
     elif moneda in precios:
         datos = precios[moneda]
@@ -281,30 +332,39 @@ def mostrar_precios(chat_id, moneda=None):
 # ==================== TETHER USDT VS BCV ====================
 
 def mostrar_tether_vs_bcv(chat_id):
+    # Obtener precio de VENTA de USDT en VES
     compra, venta = obtener_precios_p2p_reales('VES')
     if not compra or not venta:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios P2P...", crear_teclado())
         return
     
-    tasas = obtener_tasas()
-    if not tasas:
-        enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado())
+    # Obtener BCV USD
+    bcv_usd = obtener_bcv_usd()
+    if not bcv_usd:
+        enviar_mensaje(chat_id, "⏳ Obteniendo BCV...", crear_teclado())
         return
     
-    bcv_con_porcentaje = tasas['usd'] * 1.005
+    # Obtener BCV EUR
+    eur_usd = obtener_eur_usd()
+    bcv_eur = bcv_usd * eur_usd if eur_usd else bcv_usd * 0.92
     
-    diff_compra = compra - bcv_con_porcentaje
-    pct_compra = (diff_compra / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
+    # BCV + 0.50%
+    bcv_con_porcentaje = bcv_usd * 1.005
     
-    mensaje = f"🪙 *TETHER USDT vs BCV (+0.50%)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-    mensaje += f"🏦 *BCV Oficial:* {tasas['usd']:.2f} Bs\n"
-    mensaje += f"📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n"
+    # Diferencial: VENTA de USDT vs BCV + 0.50%
+    diff_venta = venta - bcv_con_porcentaje
+    pct_venta = (diff_venta / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
     
-    mensaje += f"🟢 *COMPRA USDT VES:* {compra:.2f} Bs\n"
-    mensaje += f"  Diferencia vs BCV+0.50%: {diff_compra:+.2f} Bs\n"
-    mensaje += f"  Porcentaje: {pct_compra:+.1f}%\n"
+    mensaje = f"🪙 *TETHER USDT vs BCV*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje += f"🏦 *BCV USD:* {bcv_usd:.2f} Bs\n"
+    mensaje += f"🏦 *BCV EUR:* {bcv_eur:.2f} Bs\n"
+    mensaje += f"📈 *BCV USD + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n"
     
-    enviar_logo_tether(chat_id, mensaje)  # <-- LOGO AQUÍ
+    mensaje += f"🔴 *VENTA USDT VES:* {venta:.2f} Bs\n"
+    mensaje += f"  Diferencia vs BCV+0.50%: {diff_venta:+.2f} Bs\n"
+    mensaje += f"  Porcentaje: {pct_venta:+.1f}%\n"
+    
+    enviar_logo_tether(chat_id, mensaje)
 
 # ==================== HISTORIAL VES ====================
 
@@ -339,6 +399,10 @@ def procesar_mensaje(chat_id, texto):
 🤖 *BOT USDT P2P* 🚀
 
 🔔 *Alertas SOLO para el ADMIN*
+• VES: ±{UMBRALES['VES']:.1f} Bs desde precio base
+• COP: ±{UMBRALES['COP']:.0f} COP desde precio base
+• PEN: ±{UMBRALES['PEN']:.2f} PEN desde precio base
+
 👥 {len(usuarios_activos)} usuarios registrados
 
 📱 *Botones:*
@@ -349,10 +413,9 @@ def procesar_mensaje(chat_id, texto):
 🪙 Tether USDT vs BCV - BCV + 0.50%
 📈 Historial VES - Solo VES (24h)
 
-⚡ *Umbrales de alerta:* VES: 3 Bs | COP: 60 | PEN: 0.60
 🕐 *Hora de Caracas (UTC -4)*
 """
-        enviar_logo_tether(chat_id, mensaje)  # <-- LOGO AQUÍ
+        enviar_logo_tether(chat_id, mensaje)
     
     elif texto == '💰 Precio USDT' or texto == '/precios':
         mostrar_precios(chat_id, 'USDT')
@@ -423,6 +486,8 @@ def actualizar_precios():
             if precios:
                 verificar_alertas(precios)
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
+                print(f"  ✅ COP: {precios.get('COP', {}).get('compra', 0):.2f}")
+                print(f"  ✅ PEN: {precios.get('PEN', {}).get('compra', 0):.2f}")
             else:
                 print("  ❌ No se obtuvieron precios")
             
@@ -467,6 +532,8 @@ if __name__ == "__main__":
         compra, venta = obtener_precios_p2p_reales(m)
         if compra and venta:
             print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
+            # Establecer precio base inicial
+            precios_base[m] = compra
             ultimos_precios[m] = compra
             if m == 'VES':
                 guardar_historial_ves(compra)
@@ -474,9 +541,9 @@ if __name__ == "__main__":
             print(f"  ❌ {m}: No disponible")
     
     print("\n🔔 Alertas SOLO para el ADMIN:")
-    print(f"  VES: ±{UMBRALES['VES']} Bs")
-    print(f"  COP: ±{UMBRALES['COP']} COP")
-    print(f"  PEN: ±{UMBRALES['PEN']} PEN")
+    print(f"  VES: ±{UMBRALES['VES']:.1f} Bs desde precio base")
+    print(f"  COP: ±{UMBRALES['COP']:.0f} COP desde precio base")
+    print(f"  PEN: ±{UMBRALES['PEN']:.2f} PEN desde precio base")
     
     print("\n📱 Botones:")
     print("  - Precio USDT, VES, COP, PEN")

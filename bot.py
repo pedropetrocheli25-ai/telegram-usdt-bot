@@ -34,6 +34,9 @@ ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 usuarios_activos = set()
 ARCHIVO_USUARIOS = "usuarios.txt"
 
+# ==================== CACHÉ DE PRECIOS PARA TASAS ====================
+precios_cache = {}
+
 # ==================== HISTORIAL (SOLO VES) ====================
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
@@ -87,7 +90,7 @@ def crear_teclado():
         ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
         ["🇵🇪 Precio PEN", "🪙 Tether USDT vs BCV"],
         ["📈 Historial VES", "🔍 Mejores Anuncios"],
-        ["💱 Tasas de Cambio"]  # <--- NUEVO BOTÓN AGREGADO
+        ["💱 Tasas de Cambio"]
     ]
     return {"keyboard": teclado, "resize_keyboard": True}
 
@@ -253,102 +256,90 @@ def obtener_tasas():
         pass
     return None
 
-# ==================== NUEVA FUNCIÓN: CALCULAR TASAS DE CAMBIO ====================
+# ==================== TASAS DE CAMBIO (USANDO CACHÉ) ====================
 
-def calcular_tasas_cambio():
+def calcular_tasas_desde_cache():
     """
-    Calcula todas las tasas de cambio según las especificaciones:
-    
-    1. Tasa Perú - Venezuela: Venta VES / Compra PEN = Resultado * 0.95
-    2. Tasa Venezuela - Perú: El mismo resultado de la anterior y le suma 15 Bs más
-    3. Tasa Venezuela - Brasil: Compra VES / 5.10 = Resultado * 1.05
-    4. Tasa Perú - Colombia: 1 / (Compra PEN / Venta COP) = Resultado * 0.95
-    5. Tasa Colombia - Perú: Compra COP / Venta PEN = resultado * 1.06
-    6. Tasa Colombia - Brasil: Compra COP / 5.10 = Resultado * 1.06
+    Calcula las tasas usando SOLO el caché, sin hacer peticiones a Binance
     """
-    # Obtener precios P2P
-    compra_ves, venta_ves = obtener_precios_p2p_reales('VES')
-    compra_cop, venta_cop = obtener_precios_p2p_reales('COP')
-    compra_pen, venta_pen = obtener_precios_p2p_reales('PEN')
+    global precios_cache
     
-    # Verificar que todos los precios estén disponibles
-    if not all([compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]):
+    if not precios_cache:
+        print("⚠️ Caché vacío")
         return None
     
+    compra_ves = precios_cache.get('VES', {}).get('compra')
+    venta_ves = precios_cache.get('VES', {}).get('venta')
+    compra_cop = precios_cache.get('COP', {}).get('compra')
+    venta_cop = precios_cache.get('COP', {}).get('venta')
+    compra_pen = precios_cache.get('PEN', {}).get('compra')
+    venta_pen = precios_cache.get('PEN', {}).get('venta')
+    
+    if None in [compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]:
+        print("❌ Faltan precios en caché")
+        return None
+    
+    # Calcular tasas según especificaciones
     tasas = {}
     
     # 1. Tasa Perú - Venezuela
     # Venta VES / Compra PEN = Resultado * 0.95
-    if compra_pen > 0:
-        tasas['peru_venezuela'] = (venta_ves / compra_pen) * 0.95
+    tasas['peru_venezuela'] = (venta_ves / compra_pen) * 0.95
     
     # 2. Tasa Venezuela - Perú
     # El mismo resultado de la anterior y le suma 15 Bs más
-    if 'peru_venezuela' in tasas:
-        tasas['venezuela_peru'] = tasas['peru_venezuela'] + 15
+    tasas['venezuela_peru'] = tasas['peru_venezuela'] + 15
     
     # 3. Tasa Venezuela - Brasil
     # Compra VES / 5.10 = Resultado * 1.05
-    if compra_ves > 0:
-        tasas['venezuela_brasil'] = (compra_ves / 5.10) * 1.05
+    tasas['venezuela_brasil'] = (compra_ves / 5.10) * 1.05
     
     # 4. Tasa Perú - Colombia
     # 1 / (Compra PEN / Venta COP) = Resultado * 0.95
-    if compra_pen > 0 and venta_cop > 0:
-        tasas['peru_colombia'] = (1 / (compra_pen / venta_cop)) * 0.95
+    tasas['peru_colombia'] = (1 / (compra_pen / venta_cop)) * 0.95
     
     # 5. Tasa Colombia - Perú
     # Compra COP / Venta PEN = resultado * 1.06
-    if compra_cop > 0 and venta_pen > 0:
-        tasas['colombia_peru'] = (compra_cop / venta_pen) * 1.06
+    tasas['colombia_peru'] = (compra_cop / venta_pen) * 1.06
     
     # 6. Tasa Colombia - Brasil
     # Compra COP / 5.10 = Resultado * 1.06
-    if compra_cop > 0:
-        tasas['colombia_brasil'] = (compra_cop / 5.10) * 1.06
+    tasas['colombia_brasil'] = (compra_cop / 5.10) * 1.06
     
     return tasas
 
-# ==================== NUEVA FUNCIÓN: MOSTRAR TASAS DE CAMBIO ====================
-
 def mostrar_tasas_cambio(chat_id):
     """
-    Muestra todas las tasas de cambio calculadas
+    Muestra las tasas usando SOLO el caché, sin hacer nuevas peticiones
     """
-    tasas = calcular_tasas_cambio()
+    tasas = calcular_tasas_desde_cache()
     
     if not tasas:
-        mensaje = "❌ No se pudieron calcular las tasas. Verifica que los precios P2P estén disponibles."
+        mensaje = "❌ No hay precios en caché. Espera 1 minuto a que se actualicen."
         enviar_mensaje(chat_id, mensaje, crear_teclado())
         return
     
     mensaje = "💱 *TASAS DE CAMBIO*\n"
-    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+    mensaje += f"📊 Usando precios en caché\n\n"
     
-    # Mostrar cada tasa calculada
-    if 'peru_venezuela' in tasas:
-        mensaje += f"🇵🇪→🇻🇪 *Perú - Venezuela:*\n"
-        mensaje += f"  {tasas['peru_venezuela']:.2f} Bs (Venta VES/Compra PEN)*0.95\n\n"
+    mensaje += f"🇵🇪→🇻🇪 *Perú - Venezuela:*\n"
+    mensaje += f"  {tasas['peru_venezuela']:.2f} Bs\n\n"
     
-    if 'venezuela_peru' in tasas:
-        mensaje += f"🇻🇪→🇵🇪 *Venezuela - Perú:*\n"
-        mensaje += f"  {tasas['venezuela_peru']:.2f} Bs (Tasa anterior + 15 Bs)\n\n"
+    mensaje += f"🇻🇪→🇵🇪 *Venezuela - Perú:*\n"
+    mensaje += f"  {tasas['venezuela_peru']:.2f} Bs\n\n"
     
-    if 'venezuela_brasil' in tasas:
-        mensaje += f"🇻🇪→🇧🇷 *Venezuela - Brasil:*\n"
-        mensaje += f"  {tasas['venezuela_brasil']:.2f} Bs (Compra VES/5.10)*1.05\n\n"
+    mensaje += f"🇻🇪→🇧🇷 *Venezuela - Brasil:*\n"
+    mensaje += f"  {tasas['venezuela_brasil']:.2f} Bs\n\n"
     
-    if 'peru_colombia' in tasas:
-        mensaje += f"🇵🇪→🇨🇴 *Perú - Colombia:*\n"
-        mensaje += f"  {tasas['peru_colombia']:.2f} Bs (1/(Compra PEN/Venta COP))*0.95\n\n"
+    mensaje += f"🇵🇪→🇨🇴 *Perú - Colombia:*\n"
+    mensaje += f"  {tasas['peru_colombia']:.2f} Bs\n\n"
     
-    if 'colombia_peru' in tasas:
-        mensaje += f"🇨🇴→🇵🇪 *Colombia - Perú:*\n"
-        mensaje += f"  {tasas['colombia_peru']:.2f} Bs (Compra COP/Venta PEN)*1.06\n\n"
+    mensaje += f"🇨🇴→🇵🇪 *Colombia - Perú:*\n"
+    mensaje += f"  {tasas['colombia_peru']:.2f} Bs\n\n"
     
-    if 'colombia_brasil' in tasas:
-        mensaje += f"🇨🇴→🇧🇷 *Colombia - Brasil:*\n"
-        mensaje += f"  {tasas['colombia_brasil']:.2f} Bs (Compra COP/5.10)*1.06"
+    mensaje += f"🇨🇴→🇧🇷 *Colombia - Brasil:*\n"
+    mensaje += f"  {tasas['colombia_brasil']:.2f} Bs"
     
     enviar_mensaje(chat_id, mensaje, crear_teclado())
 
@@ -551,7 +542,7 @@ def procesar_mensaje(chat_id, texto):
     elif texto == '🔍 Mejores Anuncios' or texto == '/anuncios':
         mostrar_mejores_anuncios(chat_id)
     
-    elif texto == '💱 Tasas de Cambio' or texto == '/tasas':  # <--- NUEVA CONDICIÓN AGREGADA
+    elif texto == '💱 Tasas de Cambio' or texto == '/tasas':
         mostrar_tasas_cambio(chat_id)
     
     else:
@@ -566,114 +557,4 @@ def recibir_mensajes():
         try:
             url = URL_TELEGRAM + "getUpdates"
             params = {'offset': ultimo_update_id + 1, 'timeout': 30}
-            response = requests.get(url, params=params, timeout=35)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ok'):
-                    for update in data.get('result', []):
-                        ultimo_update_id = update.get('update_id', 0)
-                        message = update.get('message')
-                        if message:
-                            chat_id = message.get('chat', {}).get('id')
-                            texto = message.get('text', '')
-                            if chat_id and texto:
-                                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
-            
-            time.sleep(1)
-            
-        except Exception as e:
-            print(f"❌ Error polling: {e}")
-            time.sleep(5)
-
-# ==================== ACTUALIZACIÓN CONTINUA ====================
-
-def actualizar_precios():
-    while True:
-        try:
-            print(f"\n🔄 Actualizando... {datetime.now().strftime('%H:%M:%S')}")
-            print(f"👥 Usuarios: {len(usuarios_activos)}")
-            
-            precios = {}
-            for moneda in ['VES', 'COP', 'PEN']:
-                compra, venta = obtener_precios_p2p_reales(moneda)
-                if compra and venta:
-                    precios[moneda] = {'compra': compra, 'venta': venta}
-                    if moneda == 'VES':
-                        guardar_historial_ves(compra)
-            
-            if precios:
-                verificar_alertas(precios)
-                print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
-            else:
-                print("  ❌ No se obtuvieron precios")
-            
-            time.sleep(60)
-            
-        except Exception as e:
-            print(f"  ❌ Error: {e}")
-            time.sleep(60)
-
-# ==================== MANTENER ACTIVO ====================
-
-def mantener_activo():
-    while True:
-        try:
-            url = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'localhost')}/"
-            requests.get(url, timeout=10)
-            print(f"💓 Keep alive: {datetime.now().strftime('%H:%M:%S')}")
-        except:
-            pass
-        time.sleep(300)
-
-# ==================== FLASK ====================
-
-@app.route('/')
-def home():
-    return f"✅ Bot activo 24/7\n👥 {len(usuarios_activos)} usuarios\n📊 {len(historial_ves)} muestras VES\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
-
-# ==================== MAIN ====================
-
-if __name__ == "__main__":
-    print("🚀 Bot iniciando en Railway...")
-    print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
-    print(f"✅ ADMIN_ID: {ADMIN_ID if ADMIN_ID else 'FALTANTE'}")
-    print(f"🕐 Zona horaria: Caracas (UTC -4)")
-    print(f"🕐 Hora actual: {datetime.now().strftime('%H:%M:%S')}")
-    
-    cargar_usuarios()
-    print(f"👥 {len(usuarios_activos)} usuarios en memoria")
-    
-    print("\n📊 Probando conexión a Binance...")
-    for m in ['VES', 'COP', 'PEN']:
-        compra, venta = obtener_precios_p2p_reales(m)
-        if compra and venta:
-            print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
-            ultimos_precios[m] = compra
-            if m == 'VES':
-                guardar_historial_ves(compra)
-        else:
-            print(f"  ❌ {m}: No disponible")
-    
-    print("\n🔍 Probando filtro de anuncios...")
-    anuncios = obtener_anuncios_con_limite('VES', 200000)
-    if anuncios:
-        print(f"  ✅ {len(anuncios)} anuncios encontrados con mínimo >= 200,000 VES")
-    else:
-        print("  ❌ No se encontraron anuncios con el filtro")
-    
-    print("\n💱 Probando tasas de cambio...")  # <--- NUEVA PRUEBA AGREGADA
-    tasas = calcular_tasas_cambio()
-    if tasas:
-        for key, value in tasas.items():
-            print(f"  ✅ {key}: {value:.2f}")
-    else:
-        print("  ❌ No se pudieron calcular las tasas")
-    
-    print("\n🚀 Iniciando hilos...")
-    threading.Thread(target=recibir_mensajes, daemon=True).start()
-    threading.Thread(target=actualizar_precios, daemon=True).start()
-    threading.Thread(target=mantener_activo, daemon=True).start()
-    
-    print("🌐 Iniciando servidor Flask...")
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+            response = requests.get(url, params=params, timeo

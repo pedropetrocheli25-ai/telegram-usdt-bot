@@ -6,6 +6,10 @@ from datetime import datetime
 from collections import deque
 from flask import Flask
 
+# ==================== CONFIGURACIÓN DE ZONA HORARIA ====================
+os.environ['TZ'] = 'America/Caracas'
+time.tzset()
+
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
 
@@ -77,16 +81,30 @@ def enviar_mensaje(chat_id, texto, teclado=None):
     except:
         return False
 
-def crear_teclado(chat_id):
+def enviar_logo_tether(chat_id, texto_adicional=""):
+    """Envía el logo de Tether con fondo verde + texto"""
+    url_logo = "https://upload.wikimedia.org/wikipedia/commons/thumb/7/70/Tether_%28USDT%29_Logo.svg/200px-Tether_%28USDT%29_Logo.svg.png"
+    try:
+        url = URL_TELEGRAM + "sendPhoto"
+        data = {
+            "chat_id": chat_id,
+            "photo": url_logo,
+            "caption": texto_adicional,
+            "parse_mode": "Markdown",
+            "reply_markup": crear_teclado()
+        }
+        response = requests.post(url, json=data, timeout=10)
+        return response.status_code == 200
+    except:
+        return False
+
+def crear_teclado():
     teclado = [
         ["💰 Precio USDT"],
         ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
-        ["🇵🇪 Precio PEN", "📊 vs BCV"],
+        ["🇵🇪 Precio PEN", "🪙 Tether USDT vs BCV"],
         ["📈 Historial VES"]
     ]
-    if chat_id == ADMIN_ID:
-        teclado.append(["👥 Usuarios"])
-        teclado.append(["🔔 Probar Alerta"])
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def obtener_precios_p2p_reales(fiat):
@@ -240,7 +258,7 @@ def mostrar_precios(chat_id, moneda=None):
         if compra and venta:
             precios[m] = {'compra': compra, 'venta': venta}
     if not precios:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado(chat_id))
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
         return
     
     if moneda == 'USDT' or moneda is None:
@@ -250,7 +268,7 @@ def mostrar_precios(chat_id, moneda=None):
             mensaje += f"  🟢 COMPRA: {datos['compra']:.2f}\n"
             mensaje += f"  🔴 VENTA: {datos['venta']:.2f}\n"
             mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n\n"
-        enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
+        enviar_logo_tether(chat_id, mensaje)  # <-- LOGO AQUÍ
     
     elif moneda in precios:
         datos = precios[moneda]
@@ -258,31 +276,27 @@ def mostrar_precios(chat_id, moneda=None):
         mensaje += f"🟢 COMPRA: {datos['compra']:.2f}\n"
         mensaje += f"🔴 VENTA: {datos['venta']:.2f}\n"
         mensaje += f"📊 Spread: {datos['compra']-datos['venta']:.2f}\n"
-        enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
+        enviar_mensaje(chat_id, mensaje, crear_teclado())
 
-# ==================== VS BCV CON +0.50% ====================
+# ==================== TETHER USDT VS BCV ====================
 
-def mostrar_vs_bcv(chat_id):
-    # Obtener precio USDT VES
+def mostrar_tether_vs_bcv(chat_id):
     compra, venta = obtener_precios_p2p_reales('VES')
     if not compra or not venta:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado(chat_id))
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
         return
     
-    # Obtener tasa BCV
     tasas = obtener_tasas()
     if not tasas:
-        enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado(chat_id))
+        enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado())
         return
     
-    # Calcular BCV + 0.50%
     bcv_con_porcentaje = tasas['usd'] * 1.005
     
-    # Diferencia entre USDT y BCV+0.50%
     diff_compra = compra - bcv_con_porcentaje
     pct_compra = (diff_compra / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
     
-    mensaje = f"📊 *USDT vs BCV (+0.50%)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje = f"🪙 *TETHER USDT vs BCV (+0.50%)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
     mensaje += f"🏦 *BCV Oficial:* {tasas['usd']:.2f} Bs\n"
     mensaje += f"📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n"
     
@@ -290,7 +304,7 @@ def mostrar_vs_bcv(chat_id):
     mensaje += f"  Diferencia vs BCV+0.50%: {diff_compra:+.2f} Bs\n"
     mensaje += f"  Porcentaje: {pct_compra:+.1f}%\n"
     
-    enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
+    enviar_logo_tether(chat_id, mensaje)  # <-- LOGO AQUÍ
 
 # ==================== HISTORIAL VES ====================
 
@@ -298,7 +312,7 @@ def mostrar_historial_ves(chat_id):
     analisis = obtener_analisis_ves()
     if not analisis:
         mensaje = "📈 *HISTORIAL VES*\n⏳ Sin datos suficientes aún"
-        enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
+        enviar_mensaje(chat_id, mensaje, crear_teclado())
         return
     
     mensaje = f"📈 *HISTORIAL VES (24h)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
@@ -312,21 +326,7 @@ def mostrar_historial_ves(chat_id):
     mensaje += f"🧭 *Tendencia:* {analisis['tendencia']}\n"
     mensaje += f"📊 *Muestras:* {analisis['muestras']}\n"
     
-    enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
-
-# ==================== COMANDO DE PRUEBA ====================
-
-def test_alerta(chat_id):
-    mensaje = f"""
-🧪 *🔔 ALERTA DE PRUEBA* 🔔
-
-✅ Esta es una alerta de prueba
-✅ Enviada SOLO al ADMIN
-✅ El sistema de alertas funciona correctamente
-
-🕐 {datetime.now().strftime('%H:%M:%S')}
-"""
-    enviar_mensaje(chat_id, mensaje)
+    enviar_mensaje(chat_id, mensaje, crear_teclado())
 
 # ==================== PROCESAR MENSAJES ====================
 
@@ -346,18 +346,13 @@ def procesar_mensaje(chat_id, texto):
 🇻🇪 Precio VES - Solo VES
 🇨🇴 Precio COP - Solo COP
 🇵🇪 Precio PEN - Solo PEN
-📊 vs BCV - BCV + 0.50% vs USDT
+🪙 Tether USDT vs BCV - BCV + 0.50%
 📈 Historial VES - Solo VES (24h)
 
 ⚡ *Umbrales de alerta:* VES: 3 Bs | COP: 60 | PEN: 0.60
+🕐 *Hora de Caracas (UTC -4)*
 """
-        enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
-    
-    elif texto == '/test_alerta' or texto == '🔔 Probar Alerta':
-        if chat_id == ADMIN_ID:
-            test_alerta(chat_id)
-        else:
-            enviar_mensaje(chat_id, "❌ Solo el administrador")
+        enviar_logo_tether(chat_id, mensaje)  # <-- LOGO AQUÍ
     
     elif texto == '💰 Precio USDT' or texto == '/precios':
         mostrar_precios(chat_id, 'USDT')
@@ -371,25 +366,14 @@ def procesar_mensaje(chat_id, texto):
     elif texto == '🇵🇪 Precio PEN' or texto == '/pen':
         mostrar_precios(chat_id, 'PEN')
     
-    elif texto == '📊 vs BCV' or texto == '/bcv':
-        mostrar_vs_bcv(chat_id)
+    elif texto == '🪙 Tether USDT vs BCV' or texto == '/tether':
+        mostrar_tether_vs_bcv(chat_id)
     
     elif texto == '📈 Historial VES' or texto == '/historial':
         mostrar_historial_ves(chat_id)
     
-    elif texto == '👥 Usuarios' or texto == '/usuarios':
-        if chat_id == ADMIN_ID:
-            usuarios = obtener_usuarios()
-            if usuarios:
-                mensaje = f"👥 *USUARIOS REGISTRADOS*\n\nTotal: {len(usuarios)}\n\n"
-                for uid in usuarios:
-                    mensaje += f"• `{uid}`\n"
-            else:
-                mensaje = "📝 No hay usuarios registrados"
-            enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
-    
     else:
-        enviar_mensaje(chat_id, "Usa /start", crear_teclado(chat_id))
+        enviar_mensaje(chat_id, "Usa /start", crear_teclado())
 
 # ==================== POLLING ====================
 
@@ -433,7 +417,6 @@ def actualizar_precios():
                 compra, venta = obtener_precios_p2p_reales(moneda)
                 if compra and venta:
                     precios[moneda] = {'compra': compra, 'venta': venta}
-                    # Solo guardar historial de VES
                     if moneda == 'VES':
                         guardar_historial_ves(compra)
             
@@ -465,7 +448,7 @@ def mantener_activo():
 
 @app.route('/')
 def home():
-    return f"✅ Bot activo 24/7\n👥 {len(usuarios_activos)} usuarios\n📊 {len(historial_ves)} muestras VES"
+    return f"✅ Bot activo 24/7\n👥 {len(usuarios_activos)} usuarios\n📊 {len(historial_ves)} muestras VES\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
 
 # ==================== MAIN ====================
 
@@ -473,6 +456,8 @@ if __name__ == "__main__":
     print("🚀 Bot iniciando en Railway...")
     print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
     print(f"✅ ADMIN_ID: {ADMIN_ID if ADMIN_ID else 'FALTANTE'}")
+    print(f"🕐 Zona horaria: Caracas (UTC -4)")
+    print(f"🕐 Hora actual: {datetime.now().strftime('%H:%M:%S')}")
     
     cargar_usuarios()
     print(f"👥 {len(usuarios_activos)} usuarios en memoria")
@@ -495,7 +480,7 @@ if __name__ == "__main__":
     
     print("\n📱 Botones:")
     print("  - Precio USDT, VES, COP, PEN")
-    print("  - vs BCV (BCV + 0.50%)")
+    print("  - Tether USDT vs BCV (BCV + 0.50%)")
     print("  - Historial VES (solo VES)")
     
     threading.Thread(target=recibir_mensajes, daemon=True).start()
@@ -503,6 +488,7 @@ if __name__ == "__main__":
     threading.Thread(target=mantener_activo, daemon=True).start()
     
     print("\n✅ Bot listo!")
+    print("🕐 Hora de Caracas (UTC -4)")
     print("=" * 40)
     
     port = int(os.environ.get('PORT', 8080))

@@ -24,14 +24,12 @@ ultimo_update_id = 0
 app = Flask(__name__)
 
 # ==================== ALERTAS (SOLO ADMIN) ====================
-# Umbrales de cambio absoluto desde el precio base
 UMBRALES = {
     'VES': 1.0,    # Alerta si cambia ±1.0 Bs
     'COP': 50.0,   # Alerta si cambia ±50 COP
     'PEN': 0.10    # Alerta si cambia ±0.10 PEN
 }
 
-# Precios base de referencia (se establecen al iniciar)
 precios_base = {'VES': None, 'COP': None, 'PEN': None}
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 usuarios_activos = set()
@@ -163,48 +161,37 @@ def obtener_precios_p2p_reales(fiat):
     except:
         return None, None
 
-def obtener_bcv_usd():
-    """Obtiene la tasa oficial USD del BCV desde DolarToday"""
-    try:
-        url = "https://s3.amazonaws.com/dolartoday/data.json"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            bcv = data.get('USD_VEF', {}).get('promedio')
-            if bcv and bcv > 0:
-                return float(bcv)
-    except:
-        pass
-    return None
-
-def obtener_eur_usd():
-    """Obtiene la tasa EUR/USD desde ExchangeRate-API"""
-    try:
-        url = "https://api.exchangerate-api.com/v4/latest/USD"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            eur = data.get('rates', {}).get('EUR', 0)
-            if eur > 0:
-                return float(eur)
-    except:
-        pass
-    return None
+# ==================== NUEVA CONSULTA BCV (DOLARAPI) ====================
 
 def obtener_tasas_bcv():
-    """Obtiene USD y EUR del BCV"""
-    bcv_usd = obtener_bcv_usd()
-    if not bcv_usd:
-        return None
-    
-    eur_usd = obtener_eur_usd()
-    bcv_eur = bcv_usd * eur_usd if eur_usd else bcv_usd * 0.92
-    
-    return {
-        'usd': bcv_usd,
-        'eur': bcv_eur,
-        'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
+    """Obtiene de forma precisa las tasas oficiales USD y EUR directamente de DolarApi (BCV)"""
+    try:
+        # Petición para USD Oficial
+        url_usd = "https://ve.dolarapi.com/v1/dolares/oficial"
+        r_usd = requests.get(url_usd, timeout=10)
+        
+        # Petición para EUR Oficial
+        url_eur = "https://ve.dolarapi.com/v1/euro/oficial"
+        r_eur = requests.get(url_eur, timeout=10)
+        
+        bcv_usd = None
+        bcv_eur = None
+        
+        if r_usd.status_code == 200:
+            bcv_usd = float(r_usd.json().get('promedio', 0))
+            
+        if r_eur.status_code == 200:
+            bcv_eur = float(r_eur.json().get('promedio', 0))
+            
+        if bcv_usd and bcv_eur:
+            return {
+                'usd': bcv_usd,
+                'eur': bcv_eur,
+                'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+    except Exception as e:
+        print(f"❌ Error al consultar DolarApi: {e}")
+    return None
 
 # ==================== HISTORIAL (SOLO VES) ====================
 
@@ -254,18 +241,15 @@ def verificar_alertas(precios):
         
         precio_actual = precios[moneda]['compra']
         
-        # Establecer precio base si no existe
         if precios_base[moneda] is None:
             precios_base[moneda] = precio_actual
             ultimos_precios[moneda] = precio_actual
             print(f"📊 Precio base {moneda}: {precio_actual:.2f}")
             continue
         
-        # Calcular cambio desde el precio base
         cambio_absoluto = precio_actual - precios_base[moneda]
         cambio_porcentaje = (cambio_absoluto / precios_base[moneda]) * 100 if precios_base[moneda] != 0 else 0
         
-        # Verificar si superó el umbral
         umbral = UMBRALES.get(moneda, 0)
         if abs(cambio_absoluto) >= umbral:
             direccion = "📈 SUBIÓ" if cambio_absoluto > 0 else "📉 BAJÓ"
@@ -287,7 +271,6 @@ def verificar_alertas(precios):
             enviar_mensaje(ADMIN_ID, mensaje)
             print(f"🔔 Alerta {moneda} enviada al ADMIN")
             
-            # Actualizar precio base para la siguiente alerta
             precios_base[moneda] = precio_actual
         
         ultimos_precios[moneda] = precio_actual
@@ -305,7 +288,6 @@ def mostrar_precios(chat_id, moneda=None):
         return
     
     if moneda == 'USDT' or moneda is None:
-        # Obtener tasas BCV
         tasas = obtener_tasas_bcv()
         bcv_usd_texto = f"{tasas['usd']:.2f} Bs" if tasas else "No disponible"
         bcv_eur_texto = f"{tasas['eur']:.2f} Bs" if tasas else "No disponible"
@@ -332,26 +314,21 @@ def mostrar_precios(chat_id, moneda=None):
 # ==================== TETHER USDT VS BCV ====================
 
 def mostrar_tether_vs_bcv(chat_id):
-    # Obtener precio de VENTA de USDT en VES
     compra, venta = obtener_precios_p2p_reales('VES')
     if not compra or not venta:
         enviar_mensaje(chat_id, "⏳ Obteniendo precios P2P...", crear_teclado())
         return
     
-    # Obtener BCV USD
-    bcv_usd = obtener_bcv_usd()
-    if not bcv_usd:
-        enviar_mensaje(chat_id, "⏳ Obteniendo BCV...", crear_teclado())
+    tasas = obtener_tasas_bcv()
+    if not tasas:
+        enviar_mensaje(chat_id, "⏳ Obteniendo tasas oficiales BCV...", crear_teclado())
         return
     
-    # Obtener BCV EUR
-    eur_usd = obtener_eur_usd()
-    bcv_eur = bcv_usd * eur_usd if eur_usd else bcv_usd * 0.92
+    bcv_usd = tasas['usd']
+    bcv_eur = tasas['eur']
     
-    # BCV + 0.50%
     bcv_con_porcentaje = bcv_usd * 1.005
     
-    # Diferencial: VENTA de USDT vs BCV + 0.50%
     diff_venta = venta - bcv_con_porcentaje
     pct_venta = (diff_venta / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
     
@@ -532,7 +509,6 @@ if __name__ == "__main__":
         compra, venta = obtener_precios_p2p_reales(m)
         if compra and venta:
             print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
-            # Establecer precio base inicial
             precios_base[m] = compra
             ultimos_precios[m] = compra
             if m == 'VES':

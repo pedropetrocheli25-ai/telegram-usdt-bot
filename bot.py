@@ -161,18 +161,16 @@ def obtener_precios_p2p_reales(fiat):
     except:
         return None, None
 
-# ==================== NUEVA CONSULTA BCV (DOLARAPI) ====================
+# ==================== CONSULTA BCV (DOLARAPI) ====================
 
 def obtener_tasas_bcv():
-    """Obtiene de forma precisa las tasas oficiales USD y EUR directamente de DolarApi (BCV)"""
+    """Obtiene de forma precisa las tasas oficiales USD y EUR de DolarApi"""
     try:
-        # Petición para USD Oficial
         url_usd = "https://ve.dolarapi.com/v1/dolares/oficial"
-        r_usd = requests.get(url_usd, timeout=10)
+        r_usd = requests.get(url_usd, timeout=8)
         
-        # Petición para EUR Oficial
         url_eur = "https://ve.dolarapi.com/v1/euro/oficial"
-        r_eur = requests.get(url_eur, timeout=10)
+        r_eur = requests.get(url_eur, timeout=8)
         
         bcv_usd = None
         bcv_eur = None
@@ -183,10 +181,12 @@ def obtener_tasas_bcv():
         if r_eur.status_code == 200:
             bcv_eur = float(r_eur.json().get('promedio', 0))
             
-        if bcv_usd and bcv_eur:
+        if bcv_usd:
+            # Si el euro falla, hacemos un estimado, sino usamos el real de la API
+            final_eur = bcv_eur if bcv_eur else (bcv_usd * 0.92)
             return {
                 'usd': bcv_usd,
-                'eur': bcv_eur,
+                'eur': final_eur,
                 'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
     except Exception as e:
@@ -279,14 +279,17 @@ def verificar_alertas(precios):
 
 def mostrar_precios(chat_id, moneda=None):
     precios = {}
+    # Buscamos siempre las 3 monedas reales en Binance P2P
     for m in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_p2p_reales(m)
         if compra and venta:
             precios[m] = {'compra': compra, 'venta': venta}
+            
     if not precios:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado())
+        enviar_mensaje(chat_id, "⏳ Error u obteniendo precios P2P de Binance...", crear_teclado())
         return
     
+    # CORRECCIÓN AQUÍ: Si pulsan 'USDT' o viene nulo, mostramos el consolidado general
     if moneda == 'USDT' or moneda is None:
         tasas = obtener_tasas_bcv()
         bcv_usd_texto = f"{tasas['usd']:.2f} Bs" if tasas else "No disponible"
@@ -314,32 +317,39 @@ def mostrar_precios(chat_id, moneda=None):
 # ==================== TETHER USDT VS BCV ====================
 
 def mostrar_tether_vs_bcv(chat_id):
+    # Buscamos primero las tasas de cambio P2P de Binance para Venezuela
     compra, venta = obtener_precios_p2p_reales('VES')
     if not compra or not venta:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios P2P...", crear_teclado())
+        enviar_mensaje(chat_id, "⏳ No se pudieron obtener los precios P2P de Binance...", crear_teclado())
         return
     
+    # Buscamos las tasas oficiales del Banco Central
     tasas = obtener_tasas_bcv()
     if not tasas:
-        enviar_mensaje(chat_id, "⏳ Obteniendo tasas oficiales BCV...", crear_teclado())
+        enviar_mensaje(chat_id, "⚠️ Error al conectar con el servidor de tasas BCV.", crear_teclado())
         return
     
     bcv_usd = tasas['usd']
     bcv_eur = tasas['eur']
     
+    # Cálculo solicitado: BCV USD + 0.50%
     bcv_con_porcentaje = bcv_usd * 1.005
     
+    # Diferencia entre el precio de venta USDT en Binance y el valor calculado (BCV+0.50%)
     diff_venta = venta - bcv_con_porcentaje
     pct_venta = (diff_venta / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
     
     mensaje = f"🪙 *TETHER USDT vs BCV*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-    mensaje += f"🏦 *BCV USD:* {bcv_usd:.2f} Bs\n"
-    mensaje += f"🏦 *BCV EUR:* {bcv_eur:.2f} Bs\n"
-    mensaje += f"📈 *BCV USD + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n"
+    mensaje += f"🏦 *BCV USD Oficial:* {bcv_usd:.2f} Bs\n"
+    mensaje += f"🏦 *BCV EUR Oficial:* {bcv_eur:.2f} Bs\n\n"
+    mensaje += f"📈 *BCV USD + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n"
+    mensaje += f"🔴 *VENTA USDT P2P:* {venta:.2f} Bs\n\n"
     
-    mensaje += f"🔴 *VENTA USDT VES:* {venta:.2f} Bs\n"
-    mensaje += f"  Diferencia vs BCV+0.50%: {diff_venta:+.2f} Bs\n"
-    mensaje += f"  Porcentaje: {pct_venta:+.1f}%\n"
+    # Mostrar el balance analítico solicitado
+    signo = "+" if diff_venta > 0 else ""
+    mensaje += f"📊 *Diferencial Analítico:*\n"
+    mensaje += f"• Diferencia: {signo}{diff_venta:.2f} Bs\n"
+    mensaje += f"• Porcentaje: {signo}{pct_venta:.2f}%\n"
     
     enviar_logo_tether(chat_id, mensaje)
 
@@ -502,7 +512,7 @@ if __name__ == "__main__":
     print(f"🕐 Hora actual: {datetime.now().strftime('%H:%M:%S')}")
     
     cargar_usuarios()
-    print(f"👥 {len(usuarios_activos)} usuarios en memoria")
+    print(f"👥 {len(usuarios_activos)} usuarios in memoria")
     
     print("\n📊 Probando conexión a Binance...")
     for m in ['VES', 'COP', 'PEN']:

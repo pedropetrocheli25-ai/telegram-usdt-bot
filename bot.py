@@ -25,11 +25,10 @@ ultimo_update_id = 0
 app = Flask(__name__)
 
 # ==================== ALERTAS ====================
-# Umbrales fijos para TODOS los usuarios
 UMBRALES = {
-    'VES': 1.0,     # 1 Bs
-    'COP': 50.0,    # 50 COP
-    'PEN': 0.10     # 0.10 PEN
+    'VES': 1.0,
+    'COP': 50.0,
+    'PEN': 0.10
 }
 
 FLUCTUACION_UMBRAL = 0.8
@@ -97,7 +96,6 @@ def crear_teclado_principal(chat_id):
         ["📈 Historial VES"]
     ]
     
-    # Solo ADMIN ve Tasas de Cambio
     if chat_id == ADMIN_ID:
         teclado.append(["🏦 Tasas de Cambio"])
     
@@ -112,7 +110,6 @@ def crear_teclado_opciones(chat_id):
         ["🇵🇪 Precio PEN"]
     ]
     
-    # Solo ADMIN ve Usuarios Registrados
     if chat_id == ADMIN_ID:
         teclado.append(["👥 Usuarios Registrados"])
     
@@ -403,11 +400,9 @@ def verificar_alertas(precios):
 
 🕐 {datetime.now().strftime('%H:%M:%S')}
 """
-                # Enviar a TODOS los usuarios (VES, COP, PEN)
                 enviar_mensaje(usuario, mensaje)
                 time.sleep(0.05)
                 
-                # Si es COP o PEN, enviar también al ADMIN
                 if moneda in ['COP', 'PEN']:
                     enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} enviada a {len(usuarios)} usuarios*")
         
@@ -525,21 +520,20 @@ def procesar_mensaje(chat_id, texto):
     
     # ==================== MENÚ PRINCIPAL ====================
     if texto == '/start':
-        mensaje = f"""
-🤖 *BOT CASA DE CAMBIO* 🚀
+        mensaje = """
+Bienvenido a TetherPrueba
 
-🔔 *Alertas automáticas para TODOS*
-👥 {len(usuarios_activos)} usuarios registrados
+Soy tu asistente diseñado para facilitarte la información sobre las tasas del momento de VES, COP y PEN del P2P de Binance.
 
-📱 *Botones:*
-💰 Precio USDT - Todas las monedas
-🪙 Tether USDT vs BCV - BCV + 0.50%
-📈 Historial VES - 24h
-🏦 Tasas de Cambio - Tasas cruzadas (ADMIN)
-📋 + Opciones - VES, COP, PEN, Usuarios
+Herramientas disponibles:
 
-⚡ *Umbrales de alerta:* VES: 1 Bs | COP: 50 COP | PEN: 0.10 PEN
-🕐 *Hora de Caracas (UTC -4)*
+💰 Precio USDT → Todas las monedas
+🪙 Tether USDT vs BCV → Comparativa con tasa oficial
+📈 Historial de brecha VES → Últimas 24h
+
+🔔 Alertas automáticas:
+Activo por cambios de 1 Bs en la tasa VES.
+Si te molesta, puedes silenciarme en cualquier momento.
 """
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
     
@@ -549,7 +543,7 @@ def procesar_mensaje(chat_id, texto):
     elif texto == '🪙 Tether USDT vs BCV' or texto == '/tether':
         mostrar_tether_vs_bcv(chat_id)
     
-    elif texto == '📈 Historial VES' or texto == '/historial':
+    elif texto == '📈 Historial de brecha VES' or texto == '/historial':
         mostrar_historial_ves(chat_id)
     
     # ==================== SOLO ADMIN ====================
@@ -707,7 +701,7 @@ if __name__ == "__main__":
     print("\n📋 MENÚ PRINCIPAL:")
     print("  - Precio USDT")
     print("  - Tether USDT vs BCV")
-    print("  - Historial VES")
+    print("  - Historial de brecha VES")
     print("  - Tasas de Cambio (ADMIN)")
     print("  - + Opciones")
     

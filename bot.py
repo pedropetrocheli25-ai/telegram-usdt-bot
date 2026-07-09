@@ -171,17 +171,17 @@ def obtener_tasas():
 # ==================== MOSTRAR TASAS (SOLO ADMIN) ====================
 
 def mostrar_tasas_admin(chat_id):
-    """Muestra las tasas de cambio SOLO al ADMIN"""
+    """Muestra las tasas de cambio SOLO al ADMIN - mismo formato de antes"""
     tasas = obtener_tasas()
     if not tasas:
         mensaje = "❌ No se pudieron obtener las tasas de cambio"
         enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
         return
     
-    mensaje = f"🏦 *TASAS DE CAMBIO* 🏦\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje = f"🏦 *TASAS DE CAMBIO* 🏦\n\n"
     mensaje += f"💵 *Dólar (USD):* {tasas['usd']:.2f} Bs\n"
     mensaje += f"💶 *Euro (EUR):* {tasas['eur']:.2f} Bs\n"
-    mensaje += f"📅 {tasas['fecha']}"
+    mensaje += f"\n📅 *Actualizado:* {tasas['fecha']}"
     
     enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
 

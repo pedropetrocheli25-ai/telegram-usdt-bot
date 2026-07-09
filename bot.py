@@ -27,12 +27,11 @@ app = Flask(__name__)
 # ==================== ALERTAS ====================
 UMBRALES = {
     'VES': 1.0,
-    'COP': 100.0,
+    'COP': 0.60,
     'PEN': 0.10
 }
 
-# Umbral de fluctuación para tasas cruzadas (%)
-FLUCTUACION_UMBRAL = 0.8  # 0.8%
+FLUCTUACION_UMBRAL = 0.8
 
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 ultimos_precios_compra = {'VES': None, 'COP': None, 'PEN': None}
@@ -41,7 +40,7 @@ ARCHIVO_USUARIOS = "usuarios.txt"
 ARCHIVO_ALERTAS = "alertas_usuarios.json"
 
 # ==================== ALERTAS POR USUARIO ====================
-alertas_usuarios = {}  # {chat_id: {'activa': True/False, 'monedas': [], 'umbral_ves': 1.0, ...}}
+alertas_usuarios = {}
 
 def cargar_alertas():
     global alertas_usuarios
@@ -134,27 +133,29 @@ def enviar_mensaje(chat_id, texto, teclado=None):
     except:
         return False
 
-def crear_teclado_principal(chat_id):
+def crear_teclado_principal():
     teclado = [
         ["💰 Precio USDT"],
-        ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
-        ["🇵🇪 Precio PEN", "🪙 Tether USDT vs BCV"],
-        ["📋 Lista de Opciones"]
+        ["🪙 Tether USDT vs BCV"],
+        ["📈 Historial VES"],
+        ["⚙️ Configurar Alertas"],
+        ["📋 Otras Opciones"]
     ]
-    
-    if chat_id == ADMIN_ID:
-        teclado.append(["👥 Usuarios Registrados"])
-        teclado.append(["🏦 Tasas de Cambio"])
-    
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_opciones(chat_id):
     teclado = [
-        ["📈 Historial VES"],
-        ["🔔 Mis Alertas"],
-        ["⚙️ Configurar Alertas"],
+        ["🇻🇪 Precio VES"],
+        ["🇨🇴 Precio COP"],
+        ["🇵🇪 Precio PEN"],
         ["🔙 Volver al menú principal"]
     ]
+    
+    # Solo ADMIN ve estos botones
+    if chat_id == ADMIN_ID:
+        teclado.insert(3, ["👥 Usuarios Registrados"])
+        teclado.insert(4, ["🏦 Tasas de Cambio"])
+    
     return {"keyboard": teclado, "resize_keyboard": True}
 
 # ==================== PRECIOS CON CACHÉ ====================
@@ -266,7 +267,7 @@ def mostrar_tasas_cambio(chat_id):
     
     if not tasas:
         mensaje = "❌ No se pudieron obtener los datos para calcular las tasas"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
         return
     
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
@@ -301,9 +302,9 @@ def mostrar_tasas_cambio(chat_id):
     mensaje += f"  → 🇨🇴 Colombia: {tasas['Venezuela → Colombia']:.2f} COP\n"
     mensaje += f"  → 🇧🇷 Brasil: {tasas['Venezuela → Brasil']:.2f} BRL"
     
-    enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-# ==================== ALERTA DE FLUCTUACIÓN DE TASAS CRUZADAS ====================
+# ==================== ALERTA DE FLUCTUACIÓN ====================
 
 ultimas_tasas_cruzadas = {}
 TASAS_ANTERIORES_ARCHIVO = "tasas_anteriores.json"
@@ -325,14 +326,12 @@ def cargar_tasas_anteriores():
         pass
 
 def verificar_fluctuacion_tasas():
-    """Verifica si las tasas cruzadas fluctuaron más del 0.8%"""
     global ultimas_tasas_cruzadas
     
     tasas_actuales = calcular_tasas_cruzadas()
     if not tasas_actuales:
         return
     
-    # Si es la primera vez, guardar y salir
     if not ultimas_tasas_cruzadas:
         ultimas_tasas_cruzadas = tasas_actuales.copy()
         guardar_tasas_anteriores()
@@ -354,7 +353,6 @@ def verificar_fluctuacion_tasas():
                     hubo_fluctuacion = True
     
     if hubo_fluctuacion:
-        # Enviar a TODOS los usuarios con alertas activadas
         for usuario in obtener_usuarios():
             alerta = get_alertas_usuario(usuario)
             if alerta.get('activa', False):
@@ -365,7 +363,6 @@ def verificar_fluctuacion_tasas():
                     pass
         print(f"🔔 Alerta de fluctuación enviada a usuarios con alertas activas")
     
-    # Actualizar tasas guardadas
     ultimas_tasas_cruzadas = tasas_actuales.copy()
     guardar_tasas_anteriores()
 
@@ -433,7 +430,6 @@ def verificar_alertas(precios):
             
             cambio = abs(precio_actual - ultimos_precios[moneda])
             
-            # Usar umbral personalizado del usuario
             if moneda == 'VES':
                 umbral = alerta.get('umbral_ves', 1.0)
             elif moneda == 'COP':
@@ -467,39 +463,43 @@ def verificar_alertas(precios):
                 except:
                     pass
         
-        # Actualizar último precio global
         for moneda in ['VES', 'COP', 'PEN']:
             if moneda in precios and precios[moneda]:
                 ultimos_precios[moneda] = precios[moneda]['compra']
 
 # ==================== MOSTRAR PRECIOS ====================
 
-def mostrar_precios(chat_id, moneda=None):
+def mostrar_precios_usdt(chat_id):
     precios = {}
     for m in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_con_cache(m)
         if compra and venta:
             precios[m] = {'compra': compra, 'venta': venta}
     if not precios:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal())
         return
     
-    if moneda == 'USDT' or moneda is None:
-        mensaje = f"💰 *PRECIOS USDT P2P*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-        for m, datos in precios.items():
-            mensaje += f"*{m}*\n"
-            mensaje += f"  🟢 COMPRA: {datos['compra']:.2f}\n"
-            mensaje += f"  🔴 VENTA: {datos['venta']:.2f}\n"
-            mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n\n"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+    mensaje = f"💰 *PRECIOS USDT P2P*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    for m, datos in precios.items():
+        mensaje += f"*{m}*\n"
+        mensaje += f"  🟢 COMPRA: {datos['compra']:.2f}\n"
+        mensaje += f"  🔴 VENTA: {datos['venta']:.2f}\n"
+        mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n\n"
     
-    elif moneda in precios:
-        datos = precios[moneda]
-        mensaje = f"💰 *PRECIO {moneda}*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-        mensaje += f"🟢 COMPRA: {datos['compra']:.2f}\n"
-        mensaje += f"🔴 VENTA: {datos['venta']:.2f}\n"
-        mensaje += f"📊 Spread: {datos['compra']-datos['venta']:.2f}\n"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+    enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
+
+def mostrar_precio_individual(chat_id, moneda):
+    compra, venta = obtener_precios_con_cache(moneda)
+    if not compra or not venta:
+        enviar_mensaje(chat_id, f"⏳ Obteniendo precio {moneda}...", crear_teclado_opciones(chat_id))
+        return
+    
+    mensaje = f"💰 *PRECIO {moneda}*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje += f"🟢 COMPRA: {compra:.2f}\n"
+    mensaje += f"🔴 VENTA: {venta:.2f}\n"
+    mensaje += f"📊 Spread: {compra-venta:.2f}\n"
+    
+    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
 # ==================== TETHER USDT VS BCV ====================
 
@@ -524,12 +524,12 @@ def obtener_tasas_bcv():
 def mostrar_tether_vs_bcv(chat_id):
     compra, venta = obtener_precios_con_cache('VES')
     if not compra or not venta:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal())
         return
     
     tasas = obtener_tasas_bcv()
     if not tasas:
-        enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado_principal())
         return
     
     bcv_con_porcentaje = tasas['usd'] * 1.005
@@ -545,7 +545,32 @@ def mostrar_tether_vs_bcv(chat_id):
     mensaje += f"  Diferencia vs BCV+0.50%: {diff_compra:+.2f} Bs\n"
     mensaje += f"  Porcentaje: {pct_compra:+.1f}%\n"
     
-    enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+    enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
+
+# ==================== CONFIGURAR ALERTAS ====================
+
+def mostrar_configurar_alertas(chat_id):
+    alerta = get_alertas_usuario(chat_id)
+    
+    estado = "🟢 ACTIVADA" if alerta.get('activa', False) else "🔴 DESACTIVADA"
+    monedas = ", ".join(alerta.get('monedas', ['VES', 'COP', 'PEN']))
+    
+    mensaje = f"⚙️ *CONFIGURAR ALERTAS*\n\n"
+    mensaje += f"📊 *Estado:* {estado}\n"
+    mensaje += f"📊 *Monedas:* {monedas}\n"
+    mensaje += f"⚡ *Umbral VES:* {alerta.get('umbral_ves', 1.0):.2f} Bs\n"
+    mensaje += f"⚡ *Umbral COP:* {alerta.get('umbral_cop', 0.60):.2f} COP\n"
+    mensaje += f"⚡ *Umbral PEN:* {alerta.get('umbral_pen', 0.10):.2f} PEN\n"
+    mensaje += f"📈 *Fluctuación Cruzada:* {alerta.get('fluctuacion', 0.8):.1f}%\n\n"
+    
+    mensaje += f"📝 *Comandos:*\n"
+    mensaje += f"🔘 /alertas_on - Activar alertas\n"
+    mensaje += f"🔘 /alertas_off - Desactivar alertas\n"
+    mensaje += f"🔘 /alertas_monedas VES COP - Elegir monedas\n"
+    mensaje += f"🔘 /alertas_umbral VES 1.5 - Cambiar umbral\n"
+    mensaje += f"🔘 /alertas_fluctuacion 0.8 - Cambiar % fluctuación"
+    
+    enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
 
 # ==================== HISTORIAL VES ====================
 
@@ -553,7 +578,7 @@ def mostrar_historial_ves(chat_id):
     analisis = obtener_analisis_ves()
     if not analisis:
         mensaje = "📈 *HISTORIAL VES*\n⏳ Sin datos suficientes aún"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+        enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
         return
     
     mensaje = f"📈 *HISTORIAL VES (24h)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
@@ -567,98 +592,7 @@ def mostrar_historial_ves(chat_id):
     mensaje += f"🧭 *Tendencia:* {analisis['tendencia']}\n"
     mensaje += f"📊 *Muestras:* {analisis['muestras']}\n"
     
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-# ==================== MIS ALERTAS (CONFIGURACIÓN USUARIO) ====================
-
-def mostrar_mis_alertas(chat_id):
-    alerta = get_alertas_usuario(chat_id)
-    
-    estado = "🟢 ACTIVADA" if alerta.get('activa', False) else "🔴 DESACTIVADA"
-    monedas = ", ".join(alerta.get('monedas', ['VES', 'COP', 'PEN']))
-    
-    mensaje = f"🔔 *MIS ALERTAS*\n\n"
-    mensaje += f"📊 *Estado:* {estado}\n"
-    mensaje += f"📊 *Monedas:* {monedas}\n"
-    mensaje += f"⚡ *Umbral VES:* {alerta.get('umbral_ves', 1.0):.2f} Bs\n"
-    mensaje += f"⚡ *Umbral COP:* {alerta.get('umbral_cop', 0.60):.2f} COP\n"
-    mensaje += f"⚡ *Umbral PEN:* {alerta.get('umbral_pen', 0.10):.2f} PEN\n"
-    mensaje += f"📈 *Fluctuación Cruzada:* {alerta.get('fluctuacion', 0.8):.1f}%\n"
-    
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-def configurar_alertas(chat_id, accion=None, valor=None):
-    alerta = get_alertas_usuario(chat_id)
-    
-    if accion is None:
-        mensaje = f"""⚙️ *CONFIGURAR ALERTAS*
-
-Usa los siguientes comandos:
-
-/alertas_on - Activar alertas
-/alertas_off - Desactivar alertas
-/alertas_monedas VES COP PEN - Elegir monedas
-/alertas_umbral VES 1.5 - Cambiar umbral VES
-/alertas_umbral COP 0.80 - Cambiar umbral COP
-/alertas_umbral PEN 0.15 - Cambiar umbral PEN
-/alertas_fluctuacion 1.0 - Cambiar fluctuación %
-
-*Ejemplo:*
-/alertas_monedas VES COP
-/alertas_umbral VES 2.0
-"""
-        enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-        return
-    
-    if accion == 'on':
-        actualizar_alerta_usuario(chat_id, activa=True)
-        enviar_mensaje(chat_id, "✅ Alertas activadas correctamente", crear_teclado_opciones(chat_id))
-    
-    elif accion == 'off':
-        actualizar_alerta_usuario(chat_id, activa=False)
-        enviar_mensaje(chat_id, "❌ Alertas desactivadas correctamente", crear_teclado_opciones(chat_id))
-    
-    elif accion == 'monedas':
-        if valor:
-            monedas = [m.strip().upper() for m in valor.split() if m.strip().upper() in ['VES', 'COP', 'PEN']]
-            if monedas:
-                actualizar_alerta_usuario(chat_id, monedas=monedas)
-                enviar_mensaje(chat_id, f"✅ Monedas actualizadas: {', '.join(monedas)}", crear_teclado_opciones(chat_id))
-            else:
-                enviar_mensaje(chat_id, "❌ Monedas inválidas. Usa: VES, COP, PEN", crear_teclado_opciones(chat_id))
-    
-    elif accion == 'umbral':
-        if valor:
-            partes = valor.split()
-            if len(partes) >= 2:
-                moneda = partes[0].upper()
-                try:
-                    umbral = float(partes[1])
-                    if moneda == 'VES':
-                        actualizar_alerta_usuario(chat_id, umbral_ves=umbral)
-                        enviar_mensaje(chat_id, f"✅ Umbral VES actualizado a {umbral:.2f} Bs", crear_teclado_opciones(chat_id))
-                    elif moneda == 'COP':
-                        actualizar_alerta_usuario(chat_id, umbral_cop=umbral)
-                        enviar_mensaje(chat_id, f"✅ Umbral COP actualizado a {umbral:.2f} COP", crear_teclado_opciones(chat_id))
-                    elif moneda == 'PEN':
-                        actualizar_alerta_usuario(chat_id, umbral_pen=umbral)
-                        enviar_mensaje(chat_id, f"✅ Umbral PEN actualizado a {umbral:.2f} PEN", crear_teclado_opciones(chat_id))
-                    else:
-                        enviar_mensaje(chat_id, "❌ Moneda inválida. Usa: VES, COP, PEN", crear_teclado_opciones(chat_id))
-                except:
-                    enviar_mensaje(chat_id, "❌ Valor inválido. Usa: /alertas_umbral VES 1.5", crear_teclado_opciones(chat_id))
-    
-    elif accion == 'fluctuacion':
-        if valor:
-            try:
-                fluctuacion = float(valor)
-                if 0.1 <= fluctuacion <= 10:
-                    actualizar_alerta_usuario(chat_id, fluctuacion=fluctuacion)
-                    enviar_mensaje(chat_id, f"✅ Fluctuación actualizada a {fluctuacion:.1f}%", crear_teclado_opciones(chat_id))
-                else:
-                    enviar_mensaje(chat_id, "❌ Valor inválido. Usa entre 0.1 y 10", crear_teclado_opciones(chat_id))
-            except:
-                enviar_mensaje(chat_id, "❌ Valor inválido. Usa: /alertas_fluctuacion 0.8", crear_teclado_opciones(chat_id))
+    enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
 
 # ==================== PROCESAR MENSAJES ====================
 
@@ -666,7 +600,7 @@ def procesar_mensaje(chat_id, texto):
     print(f"📩 {texto}")
     guardar_usuario(chat_id)
     
-    # ==================== COMANDOS /start ====================
+    # ==================== MENÚ PRINCIPAL ====================
     if texto == '/start':
         mensaje = f"""
 🤖 *BOT CASA DE CAMBIO* 🚀
@@ -676,73 +610,45 @@ def procesar_mensaje(chat_id, texto):
 
 📱 *Botones:*
 💰 Precio USDT - Todas las monedas
-🇻🇪 Precio VES - Solo VES
-🇨🇴 Precio COP - Solo COP
-🇵🇪 Precio PEN - Solo PEN
 🪙 Tether USDT vs BCV - BCV + 0.50%
-📋 Lista de Opciones - Historial, Alertas, Configuración
+📈 Historial VES - 24h
+⚙️ Configurar Alertas - Activa/Desactiva
+📋 Otras Opciones - VES, COP, PEN, Tasas, Usuarios
 
 ⚡ *Umbrales por defecto:* VES: 1 Bs | COP: 0.60 | PEN: 0.10
 🕐 *Hora de Caracas (UTC -4)*
 """
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
     
-    # ==================== MENÚ PRINCIPAL ====================
     elif texto == '💰 Precio USDT' or texto == '/precios':
-        mostrar_precios(chat_id, 'USDT')
-    
-    elif texto == '🇻🇪 Precio VES' or texto == '/ves':
-        mostrar_precios(chat_id, 'VES')
-    
-    elif texto == '🇨🇴 Precio COP' or texto == '/cop':
-        mostrar_precios(chat_id, 'COP')
-    
-    elif texto == '🇵🇪 Precio PEN' or texto == '/pen':
-        mostrar_precios(chat_id, 'PEN')
+        mostrar_precios_usdt(chat_id)
     
     elif texto == '🪙 Tether USDT vs BCV' or texto == '/tether':
         mostrar_tether_vs_bcv(chat_id)
     
-    # ==================== LISTA DE OPCIONES ====================
-    elif texto == '📋 Lista de Opciones':
-        mensaje = "📋 *LISTA DE OPCIONES*\n\nSelecciona una opción:"
+    elif texto == '📈 Historial VES' or texto == '/historial':
+        mostrar_historial_ves(chat_id)
+    
+    elif texto == '⚙️ Configurar Alertas' or texto == '/configurar':
+        mostrar_configurar_alertas(chat_id)
+    
+    # ==================== OTRAS OPCIONES ====================
+    elif texto == '📋 Otras Opciones':
+        mensaje = "📋 *OTRAS OPCIONES*\n\nSelecciona una opción:"
         enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
     
     elif texto == '🔙 Volver al menú principal':
         mensaje = "🏠 *Volviendo al menú principal*"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
     
-    # ==================== OPCIONES ====================
-    elif texto == '📈 Historial VES' or texto == '/historial':
-        mostrar_historial_ves(chat_id)
+    elif texto == '🇻🇪 Precio VES' or texto == '/ves':
+        mostrar_precio_individual(chat_id, 'VES')
     
-    elif texto == '🔔 Mis Alertas' or texto == '/misalertas':
-        mostrar_mis_alertas(chat_id)
+    elif texto == '🇨🇴 Precio COP' or texto == '/cop':
+        mostrar_precio_individual(chat_id, 'COP')
     
-    elif texto == '⚙️ Configurar Alertas' or texto == '/configurar':
-        configurar_alertas(chat_id)
-    
-    # ==================== COMANDOS DE ALERTAS ====================
-    elif texto.startswith('/alertas_on'):
-        configurar_alertas(chat_id, 'on')
-    
-    elif texto.startswith('/alertas_off'):
-        configurar_alertas(chat_id, 'off')
-    
-    elif texto.startswith('/alertas_monedas'):
-        partes = texto.split(maxsplit=1)
-        valor = partes[1] if len(partes) > 1 else None
-        configurar_alertas(chat_id, 'monedas', valor)
-    
-    elif texto.startswith('/alertas_umbral'):
-        partes = texto.split(maxsplit=1)
-        valor = partes[1] if len(partes) > 1 else None
-        configurar_alertas(chat_id, 'umbral', valor)
-    
-    elif texto.startswith('/alertas_fluctuacion'):
-        partes = texto.split(maxsplit=1)
-        valor = partes[1] if len(partes) > 1 else None
-        configurar_alertas(chat_id, 'fluctuacion', valor)
+    elif texto == '🇵🇪 Precio PEN' or texto == '/pen':
+        mostrar_precio_individual(chat_id, 'PEN')
     
     # ==================== SOLO ADMIN ====================
     elif texto == '👥 Usuarios Registrados' or texto == '/usuarios':
@@ -756,14 +662,71 @@ def procesar_mensaje(chat_id, texto):
                     mensaje += f"• `{uid}` - {estado}\n"
             else:
                 mensaje = "📝 No hay usuarios registrados"
-            enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
     
     elif texto == '🏦 Tasas de Cambio' or texto == '/tasas':
         if chat_id == ADMIN_ID:
             mostrar_tasas_cambio(chat_id)
     
+    # ==================== COMANDOS DE ALERTAS ====================
+    elif texto.startswith('/alertas_on'):
+        actualizar_alerta_usuario(chat_id, activa=True)
+        enviar_mensaje(chat_id, "✅ Alertas activadas correctamente", crear_teclado_principal())
+    
+    elif texto.startswith('/alertas_off'):
+        actualizar_alerta_usuario(chat_id, activa=False)
+        enviar_mensaje(chat_id, "❌ Alertas desactivadas correctamente", crear_teclado_principal())
+    
+    elif texto.startswith('/alertas_monedas'):
+        partes = texto.split(maxsplit=1)
+        valor = partes[1] if len(partes) > 1 else None
+        if valor:
+            monedas = [m.strip().upper() for m in valor.split() if m.strip().upper() in ['VES', 'COP', 'PEN']]
+            if monedas:
+                actualizar_alerta_usuario(chat_id, monedas=monedas)
+                enviar_mensaje(chat_id, f"✅ Monedas actualizadas: {', '.join(monedas)}", crear_teclado_principal())
+            else:
+                enviar_mensaje(chat_id, "❌ Monedas inválidas. Usa: VES, COP, PEN", crear_teclado_principal())
+    
+    elif texto.startswith('/alertas_umbral'):
+        partes = texto.split(maxsplit=1)
+        valor = partes[1] if len(partes) > 1 else None
+        if valor:
+            partes2 = valor.split()
+            if len(partes2) >= 2:
+                moneda = partes2[0].upper()
+                try:
+                    umbral = float(partes2[1])
+                    if moneda == 'VES':
+                        actualizar_alerta_usuario(chat_id, umbral_ves=umbral)
+                        enviar_mensaje(chat_id, f"✅ Umbral VES actualizado a {umbral:.2f} Bs", crear_teclado_principal())
+                    elif moneda == 'COP':
+                        actualizar_alerta_usuario(chat_id, umbral_cop=umbral)
+                        enviar_mensaje(chat_id, f"✅ Umbral COP actualizado a {umbral:.2f} COP", crear_teclado_principal())
+                    elif moneda == 'PEN':
+                        actualizar_alerta_usuario(chat_id, umbral_pen=umbral)
+                        enviar_mensaje(chat_id, f"✅ Umbral PEN actualizado a {umbral:.2f} PEN", crear_teclado_principal())
+                    else:
+                        enviar_mensaje(chat_id, "❌ Moneda inválida. Usa: VES, COP, PEN", crear_teclado_principal())
+                except:
+                    enviar_mensaje(chat_id, "❌ Valor inválido. Usa: /alertas_umbral VES 1.5", crear_teclado_principal())
+    
+    elif texto.startswith('/alertas_fluctuacion'):
+        partes = texto.split(maxsplit=1)
+        valor = partes[1] if len(partes) > 1 else None
+        if valor:
+            try:
+                fluctuacion = float(valor)
+                if 0.1 <= fluctuacion <= 10:
+                    actualizar_alerta_usuario(chat_id, fluctuacion=fluctuacion)
+                    enviar_mensaje(chat_id, f"✅ Fluctuación actualizada a {fluctuacion:.1f}%", crear_teclado_principal())
+                else:
+                    enviar_mensaje(chat_id, "❌ Valor inválido. Usa entre 0.1 y 10", crear_teclado_principal())
+            except:
+                enviar_mensaje(chat_id, "❌ Valor inválido. Usa: /alertas_fluctuacion 0.8", crear_teclado_principal())
+    
     else:
-        enviar_mensaje(chat_id, "Usa /start", crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "Usa /start", crear_teclado_principal())
 
 # ==================== POLLING ====================
 
@@ -813,9 +776,7 @@ def actualizar_precios():
                         guardar_historial_ves(compra)
             
             if precios:
-                # Verificar alertas de precios
                 verificar_alertas(precios)
-                # Verificar fluctuación de tasas cruzadas
                 verificar_fluctuacion_tasas()
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
             else:
@@ -873,17 +834,16 @@ if __name__ == "__main__":
             print(f"  ❌ {m}: No disponible")
     
     print("\n📋 MENÚ PRINCIPAL:")
-    print("  - Precio USDT, VES, COP, PEN")
+    print("  - Precio USDT")
     print("  - Tether USDT vs BCV")
-    print("  - Lista de Opciones (Historial, Alertas, Configuración)")
+    print("  - Historial VES")
+    print("  - Configurar Alertas")
+    print("  - Otras Opciones")
     
-    print("\n🔒 SOLO ADMIN:")
-    print("  - Usuarios Registrados")
-    print("  - Tasas de Cambio")
-    
-    print("\n🔔 ALERTAS POR USUARIO:")
-    print("  - Cada usuario configura sus propias alertas")
-    print("  - Fluctuación de tasas cruzadas: 0.8%")
+    print("\n📋 OTRAS OPCIONES:")
+    print("  - Precio VES, COP, PEN")
+    print("  - Usuarios Registrados (ADMIN)")
+    print("  - Tasas de Cambio (ADMIN)")
     
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()

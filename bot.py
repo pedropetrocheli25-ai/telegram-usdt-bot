@@ -34,7 +34,6 @@ UMBRALES = {
 FLUCTUACION_UMBRAL = 0.8
 
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
-ultimos_precios_compra = {'VES': None, 'COP': None, 'PEN': None}
 usuarios_activos = set()
 ARCHIVO_USUARIOS = "usuarios.txt"
 ARCHIVO_ALERTAS = "alertas_usuarios.json"
@@ -143,6 +142,17 @@ def crear_teclado_principal():
     ]
     return {"keyboard": teclado, "resize_keyboard": True}
 
+def crear_teclado_alertas(chat_id):
+    alerta = get_alertas_usuario(chat_id)
+    estado = "🔴 Desactivar" if alerta.get('activa', False) else "🟢 Activar"
+    
+    teclado = [
+        [f"{estado} Alertas"],
+        ["📋 Ver Configuración"],
+        ["🔙 Volver al menú principal"]
+    ]
+    return {"keyboard": teclado, "resize_keyboard": True}
+
 def crear_teclado_opciones(chat_id):
     teclado = [
         ["🇻🇪 Precio VES"],
@@ -151,7 +161,6 @@ def crear_teclado_opciones(chat_id):
         ["🔙 Volver al menú principal"]
     ]
     
-    # Solo ADMIN ve estos botones
     if chat_id == ADMIN_ID:
         teclado.insert(3, ["👥 Usuarios Registrados"])
         teclado.insert(4, ["🏦 Tasas de Cambio"])
@@ -547,7 +556,7 @@ def mostrar_tether_vs_bcv(chat_id):
     
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
 
-# ==================== CONFIGURAR ALERTAS ====================
+# ==================== CONFIGURAR ALERTAS (CON BOTONES) ====================
 
 def mostrar_configurar_alertas(chat_id):
     alerta = get_alertas_usuario(chat_id)
@@ -568,31 +577,10 @@ def mostrar_configurar_alertas(chat_id):
     mensaje += f"🔘 /alertas_off - Desactivar alertas\n"
     mensaje += f"🔘 /alertas_monedas VES COP - Elegir monedas\n"
     mensaje += f"🔘 /alertas_umbral VES 1.5 - Cambiar umbral\n"
-    mensaje += f"🔘 /alertas_fluctuacion 0.8 - Cambiar % fluctuación"
+    mensaje += f"🔘 /alertas_fluctuacion 0.8 - Cambiar % fluctuación\n\n"
+    mensaje += f"📌 *O usa los botones abajo*"
     
-    enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
-
-# ==================== HISTORIAL VES ====================
-
-def mostrar_historial_ves(chat_id):
-    analisis = obtener_analisis_ves()
-    if not analisis:
-        mensaje = "📈 *HISTORIAL VES*\n⏳ Sin datos suficientes aún"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
-        return
-    
-    mensaje = f"📈 *HISTORIAL VES (24h)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
-    mensaje += f"📅 {datetime.now().strftime('%d/%m/%Y')}\n\n"
-    mensaje += f"📊 *Apertura:* {analisis['apertura']:.2f} Bs\n"
-    mensaje += f"📊 *Actual:* {analisis['actual']:.2f} Bs\n"
-    emoji = "📈" if analisis['cambio'] > 0 else "📉" if analisis['cambio'] < 0 else "➡️"
-    mensaje += f"{emoji} *Cambio:* {analisis['cambio']:+.2f} Bs ({analisis['cambio_porcentaje']:+.1f}%)\n"
-    mensaje += f"📈 *Máximo:* {analisis['maximo']:.2f} Bs\n"
-    mensaje += f"📉 *Mínimo:* {analisis['minimo']:.2f} Bs\n"
-    mensaje += f"🧭 *Tendencia:* {analisis['tendencia']}\n"
-    mensaje += f"📊 *Muestras:* {analisis['muestras']}\n"
-    
-    enviar_mensaje(chat_id, mensaje, crear_teclado_principal())
+    enviar_mensaje(chat_id, mensaje, crear_teclado_alertas(chat_id))
 
 # ==================== PROCESAR MENSAJES ====================
 
@@ -630,6 +618,18 @@ def procesar_mensaje(chat_id, texto):
         mostrar_historial_ves(chat_id)
     
     elif texto == '⚙️ Configurar Alertas' or texto == '/configurar':
+        mostrar_configurar_alertas(chat_id)
+    
+    # ==================== BOTONES DE ALERTAS ====================
+    elif texto == '🟢 Activar Alertas' or texto == '/alertas_on':
+        actualizar_alerta_usuario(chat_id, activa=True)
+        enviar_mensaje(chat_id, "✅ Alertas activadas correctamente", crear_teclado_principal())
+    
+    elif texto == '🔴 Desactivar Alertas' or texto == '/alertas_off':
+        actualizar_alerta_usuario(chat_id, activa=False)
+        enviar_mensaje(chat_id, "❌ Alertas desactivadas correctamente", crear_teclado_principal())
+    
+    elif texto == '📋 Ver Configuración':
         mostrar_configurar_alertas(chat_id)
     
     # ==================== OTRAS OPCIONES ====================
@@ -837,13 +837,8 @@ if __name__ == "__main__":
     print("  - Precio USDT")
     print("  - Tether USDT vs BCV")
     print("  - Historial VES")
-    print("  - Configurar Alertas")
+    print("  - Configurar Alertas (CON BOTONES)")
     print("  - Otras Opciones")
-    
-    print("\n📋 OTRAS OPCIONES:")
-    print("  - Precio VES, COP, PEN")
-    print("  - Usuarios Registrados (ADMIN)")
-    print("  - Tasas de Cambio (ADMIN)")
     
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()

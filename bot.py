@@ -34,6 +34,11 @@ ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 usuarios_activos = set()
 ARCHIVO_USUARIOS = "usuarios.txt"
 
+# ==================== CACHÉ DE PRECIOS ====================
+cache_precios = {}
+cache_tiempo = {}
+CACHE_DURACION = 30  # segundos
+
 # ==================== HISTORIAL (SOLO VES) ====================
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
@@ -82,7 +87,6 @@ def enviar_mensaje(chat_id, texto, teclado=None):
         return False
 
 def crear_teclado(chat_id):
-    """Crea teclado personalizado según si es ADMIN o no"""
     teclado = [
         ["💰 Precio USDT"],
         ["🇻🇪 Precio VES", "🇨🇴 Precio COP"],
@@ -90,12 +94,30 @@ def crear_teclado(chat_id):
         ["📈 Historial VES"]
     ]
     
-    # Botones SOLO para ADMIN
     if chat_id == ADMIN_ID:
         teclado.append(["👥 Usuarios Registrados"])
         teclado.append(["🏦 Tasas de Cambio"])
     
     return {"keyboard": teclado, "resize_keyboard": True}
+
+# ==================== PRECIOS CON CACHÉ ====================
+
+def obtener_precios_con_cache(fiat):
+    """Obtiene precios con caché de 30 segundos"""
+    global cache_precios, cache_tiempo
+    
+    ahora = time.time()
+    
+    if fiat in cache_precios and fiat in cache_tiempo:
+        if ahora - cache_tiempo[fiat] < CACHE_DURACION:
+            return cache_precios[fiat]['compra'], cache_precios[fiat]['venta']
+    
+    compra, venta = obtener_precios_p2p_reales(fiat)
+    if compra and venta:
+        cache_precios[fiat] = {'compra': compra, 'venta': venta}
+        cache_tiempo[fiat] = ahora
+    
+    return compra, venta
 
 def obtener_precios_p2p_reales(fiat):
     try:
@@ -150,38 +172,99 @@ def obtener_precios_p2p_reales(fiat):
     except:
         return None, None
 
-def obtener_tasas():
-    try:
-        url = "https://api.exchangerate-api.com/v4/latest/USD"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            usd = data.get('rates', {}).get('VES', 0)
-            eur = data.get('rates', {}).get('EUR', 0)
-            if usd > 0:
-                return {
-                    'usd': usd,
-                    'eur': usd * eur if eur > 0 else usd * 0.92,
-                    'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-    except:
-        pass
-    return None
+# ==================== TASAS CRUZADAS ====================
 
-# ==================== MOSTRAR TASAS (SOLO ADMIN) ====================
+def calcular_tasas_cruzadas():
+    """Calcula todas las tasas cruzadas usando caché"""
+    
+    # Obtener precios con caché
+    compra_ves, venta_ves = obtener_precios_con_cache('VES')
+    compra_cop, venta_cop = obtener_precios_con_cache('COP')
+    compra_pen, venta_pen = obtener_precios_con_cache('PEN')
+    
+    if not all([compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]):
+        return None
+    
+    tasas = {}
+    
+    # ==================== PERÚ (PEN) ====================
+    # Tasa Perú - Venezuela: Venta VES / Compra PEN = Resultado * 0.95
+    tasas['Perú → Venezuela'] = (venta_ves / compra_pen) * 0.95
+    
+    # Tasa Venezuela - Perú: mismo resultado + 15 Bs
+    tasas['Venezuela → Perú'] = tasas['Perú → Venezuela'] + 15
+    
+    # Tasa Perú - Colombia: 1 / (Compra PEN / Venta COP) = Resultado * 0.95
+    if compra_pen and venta_cop:
+        tasas['Perú → Colombia'] = (1 / (compra_pen / venta_cop)) * 0.95
+    else:
+        tasas['Perú → Colombia'] = 0
+    
+    # Tasa Colombia - Perú: Compra COP / Venta PEN = Resultado * 1.06
+    tasas['Colombia → Perú'] = (compra_cop / venta_pen) * 1.06
+    
+    # ==================== COLOMBIA (COP) ====================
+    # Tasa Colombia - Venezuela: Compra COP / Venta VES = Resultado * 1.06
+    tasas['Colombia → Venezuela'] = (compra_cop / venta_ves) * 1.06
+    
+    # Tasa Venezuela - Colombia: 1 / (Compra VES / Venta COP) = Resultado * 0.95
+    if compra_ves and venta_cop:
+        tasas['Venezuela → Colombia'] = (1 / (compra_ves / venta_cop)) * 0.95
+    else:
+        tasas['Venezuela → Colombia'] = 0
+    
+    # Tasa Colombia - Brasil: Compra COP / 5.10 = Resultado * 1.06
+    tasas['Colombia → Brasil'] = (compra_cop / 5.10) * 1.06
+    
+    # ==================== VENEZUELA (VES) ====================
+    # Tasa Venezuela - Brasil: Compra VES / 5.10 = Resultado * 1.05
+    tasas['Venezuela → Brasil'] = (compra_ves / 5.10) * 1.05
+    
+    return tasas
 
-def mostrar_tasas_admin(chat_id):
-    """Muestra las tasas de cambio SOLO al ADMIN - mismo formato de antes"""
-    tasas = obtener_tasas()
+def mostrar_tasas_cambio(chat_id):
+    """Muestra las tasas cruzadas SOLO al ADMIN"""
+    
+    tasas = calcular_tasas_cruzadas()
+    
     if not tasas:
-        mensaje = "❌ No se pudieron obtener las tasas de cambio"
+        mensaje = "❌ No se pudieron obtener los datos para calcular las tasas"
         enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
         return
     
-    mensaje = f"🏦 *TASAS DE CAMBIO* 🏦\n\n"
-    mensaje += f"💵 *Dólar (USD):* {tasas['usd']:.2f} Bs\n"
-    mensaje += f"💶 *Euro (EUR):* {tasas['eur']:.2f} Bs\n"
-    mensaje += f"\n📅 *Actualizado:* {tasas['fecha']}"
+    # Obtener precios actuales para mostrar referencia
+    compra_ves, venta_ves = obtener_precios_con_cache('VES')
+    compra_cop, venta_cop = obtener_precios_con_cache('COP')
+    compra_pen, venta_pen = obtener_precios_con_cache('PEN')
+    
+    mensaje = f"🏦 *TASAS DE CAMBIO CRUZADAS*\n"
+    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    
+    mensaje += f"📊 *Precios de referencia:*\n"
+    mensaje += f"  🇻🇪 VES: Compra {compra_ves:.2f} | Venta {venta_ves:.2f}\n"
+    mensaje += f"  🇨🇴 COP: Compra {compra_cop:.2f} | Venta {venta_cop:.2f}\n"
+    mensaje += f"  🇵🇪 PEN: Compra {compra_pen:.2f} | Venta {venta_pen:.2f}\n\n"
+    
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇵🇪 *PERÚ (PEN)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Perú → Venezuela']:.2f} Bs\n"
+    mensaje += f"  → 🇨🇴 Colombia: {tasas['Perú → Colombia']:.2f} COP\n"
+    mensaje += f"  → 🇧🇷 Brasil: *Pendiente*\n\n"
+    
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇨🇴 *COLOMBIA (COP)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Colombia → Venezuela']:.2f} Bs\n"
+    mensaje += f"  → 🇵🇪 Perú: {tasas['Colombia → Perú']:.2f} PEN\n"
+    mensaje += f"  → 🇧🇷 Brasil: {tasas['Colombia → Brasil']:.2f} BRL\n\n"
+    
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇻🇪 *VENEZUELA (VES)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇵🇪 Perú: {tasas['Venezuela → Perú']:.2f} PEN\n"
+    mensaje += f"  → 🇨🇴 Colombia: {tasas['Venezuela → Colombia']:.2f} COP\n"
+    mensaje += f"  → 🇧🇷 Brasil: {tasas['Venezuela → Brasil']:.2f} BRL"
     
     enviar_mensaje(chat_id, mensaje, crear_teclado(chat_id))
 
@@ -277,7 +360,7 @@ def verificar_alertas(precios):
 def mostrar_precios(chat_id, moneda=None):
     precios = {}
     for m in ['VES', 'COP', 'PEN']:
-        compra, venta = obtener_precios_p2p_reales(m)
+        compra, venta = obtener_precios_con_cache(m)
         if compra and venta:
             precios[m] = {'compra': compra, 'venta': venta}
     if not precios:
@@ -303,13 +386,31 @@ def mostrar_precios(chat_id, moneda=None):
 
 # ==================== TETHER USDT VS BCV ====================
 
+def obtener_tasas_bcv():
+    try:
+        url = "https://api.exchangerate-api.com/v4/latest/USD"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            usd = data.get('rates', {}).get('VES', 0)
+            eur = data.get('rates', {}).get('EUR', 0)
+            if usd > 0:
+                return {
+                    'usd': usd,
+                    'eur': usd * eur if eur > 0 else usd * 0.92,
+                    'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+    except:
+        pass
+    return None
+
 def mostrar_tether_vs_bcv(chat_id):
-    compra, venta = obtener_precios_p2p_reales('VES')
+    compra, venta = obtener_precios_con_cache('VES')
     if not compra or not venta:
         enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado(chat_id))
         return
     
-    tasas = obtener_tasas()
+    tasas = obtener_tasas_bcv()
     if not tasas:
         enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado(chat_id))
         return
@@ -409,7 +510,7 @@ def procesar_mensaje(chat_id, texto):
     
     elif texto == '🏦 Tasas de Cambio' or texto == '/tasas':
         if chat_id == ADMIN_ID:
-            mostrar_tasas_admin(chat_id)
+            mostrar_tasas_cambio(chat_id)
     
     else:
         enviar_mensaje(chat_id, "Usa /start", crear_teclado(chat_id))
@@ -456,6 +557,9 @@ def actualizar_precios():
                 compra, venta = obtener_precios_p2p_reales(moneda)
                 if compra and venta:
                     precios[moneda] = {'compra': compra, 'venta': venta}
+                    # Actualizar caché
+                    cache_precios[moneda] = {'compra': compra, 'venta': venta}
+                    cache_tiempo[moneda] = time.time()
                     if moneda == 'VES':
                         guardar_historial_ves(compra)
             
@@ -507,6 +611,8 @@ if __name__ == "__main__":
         if compra and venta:
             print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
             ultimos_precios[m] = compra
+            cache_precios[m] = {'compra': compra, 'venta': venta}
+            cache_tiempo[m] = time.time()
             if m == 'VES':
                 guardar_historial_ves(compra)
         else:
@@ -525,7 +631,7 @@ if __name__ == "__main__":
     
     print("\n🔒 Botones SOLO para ADMIN:")
     print("  - Usuarios Registrados")
-    print("  - Tasas de Cambio")
+    print("  - Tasas de Cambio (VES, COP, PEN, BRL)")
     
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()

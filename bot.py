@@ -93,7 +93,7 @@ def crear_teclado_principal(chat_id):
     teclado = [
         ["💰 Precio USDT"],
         ["🪙 Tether USDT vs BCV"],
-        ["📈 Historial VES"]
+        ["📈 Historial de brecha VES"]
     ]
     
     if chat_id == ADMIN_ID:
@@ -330,6 +330,7 @@ def guardar_historial_ves(precio):
     historial_ves.append(precio)
     if precio_apertura_ves is None:
         precio_apertura_ves = precio
+    print(f"📊 Historial VES: {len(historial_ves)} muestras")
 
 def obtener_analisis_ves():
     if not historial_ves:
@@ -495,11 +496,11 @@ def mostrar_tether_vs_bcv(chat_id):
 def mostrar_historial_ves(chat_id):
     analisis = obtener_analisis_ves()
     if not analisis:
-        mensaje = "📈 *HISTORIAL VES*\n⏳ Sin datos suficientes aún\n\nEspera al menos 2 minutos después de iniciar el bot."
+        mensaje = "📈 *HISTORIAL DE BRECHA VES*\n⏳ Sin datos suficientes aún\n\nEspera al menos 2 minutos después de iniciar el bot."
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
         return
     
-    mensaje = f"📈 *HISTORIAL VES (24h)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+    mensaje = f"📈 *HISTORIAL DE BRECHA VES (24h)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
     mensaje += f"📅 {datetime.now().strftime('%d/%m/%Y')}\n\n"
     mensaje += f"📊 *Apertura:* {analisis['apertura']:.2f} Bs\n"
     mensaje += f"📊 *Actual:* {analisis['actual']:.2f} Bs\n"
@@ -518,7 +519,6 @@ def procesar_mensaje(chat_id, texto):
     print(f"📩 {texto}")
     guardar_usuario(chat_id)
     
-    # ==================== MENÚ PRINCIPAL ====================
     if texto == '/start':
         mensaje = """
 Bienvenido a TetherPrueba
@@ -546,14 +546,12 @@ Si te molesta, puedes silenciarme en cualquier momento.
     elif texto == '📈 Historial de brecha VES' or texto == '/historial':
         mostrar_historial_ves(chat_id)
     
-    # ==================== SOLO ADMIN ====================
     elif texto == '🏦 Tasas de Cambio' or texto == '/tasas':
         if chat_id == ADMIN_ID:
             mostrar_tasas_cambio(chat_id)
         else:
             enviar_mensaje(chat_id, "❌ Solo el administrador puede usar este comando", crear_teclado_principal(chat_id))
     
-    # ==================== + OPCIONES ====================
     elif texto == '📋 + Opciones':
         mensaje = "📋 *+ OPCIONES*\n\nSelecciona una opción:"
         enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
@@ -571,7 +569,6 @@ Si te molesta, puedes silenciarme en cualquier momento.
     elif texto == '🇵🇪 Precio PEN' or texto == '/pen':
         mostrar_precio_individual(chat_id, 'PEN')
     
-    # ==================== SOLO ADMIN ====================
     elif texto == '👥 Usuarios Registrados' or texto == '/usuarios':
         if chat_id == ADMIN_ID:
             usuarios = obtener_usuarios()
@@ -639,6 +636,7 @@ def actualizar_precios():
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
+                print(f"  📊 Historial VES: {len(historial_ves)} muestras")
             else:
                 print("  ❌ No se obtuvieron precios")
             
@@ -690,6 +688,8 @@ if __name__ == "__main__":
                 guardar_historial_ves(compra)
         else:
             print(f"  ❌ {m}: No disponible")
+    
+    print(f"\n📊 Historial VES inicial: {len(historial_ves)} muestras")
     
     print("\n🔔 ALERTAS ACTIVAS PARA TODOS:")
     print(f"  VES: ±{UMBRALES['VES']} Bs")

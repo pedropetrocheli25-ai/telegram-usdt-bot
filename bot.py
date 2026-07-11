@@ -46,6 +46,16 @@ CACHE_DURACION = 30
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
 
+# ==================== HISTORIAL DE PREDICCIONES ====================
+historial_predicciones = deque(maxlen=100)
+estadisticas_predicciones = {
+    'aciertos': 0,
+    'fallos': 0,
+    'total_predicciones': 0,
+    'precision': 0,
+    'ultima_prediccion': None
+}
+
 # ==================== GESTIÓN DE USUARIOS ====================
 
 def cargar_usuarios():
@@ -113,8 +123,11 @@ def crear_teclado_opciones(chat_id):
     if chat_id == ADMIN_ID:
         teclado.append(["👥 Usuarios Registrados"])
     
+    teclado.append(["📊 Análisis Mercado"])
+    teclado.append(["📋 Historial Predicciones"])
+    teclado.append(["📈 Estadísticas"])
     teclado.append(["🔙 Volver al menú principal"])
-    
+
     return {"keyboard": teclado, "resize_keyboard": True}
 
 # ==================== PRECIOS CON CACHÉ ====================
@@ -513,6 +526,416 @@ def mostrar_historial_ves(chat_id):
     
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
+# ==================== ANÁLISIS DE MERCADO ====================
+
+def analizar_tendencia_mercado(moneda='VES'):
+    """
+    Analiza la tendencia del mercado basado en datos históricos
+    """
+    global historial_ves
+    
+    if len(historial_ves) < 15:
+        return None, "⚠️ Se necesitan al menos 15 muestras (15 minutos) para análisis"
+    
+    precios = list(historial_ves)
+    
+    precio_actual = precios[-1]
+    precio_1h = precios[-6] if len(precios) >= 6 else precios[0]
+    precio_30min = precios[-3] if len(precios) >= 3 else precios[0]
+    precio_1hora = precios[-6] if len(precios) >= 6 else precios[0]
+    precio_2h = precios[-12] if len(precios) >= 12 else precios[0]
+    
+    cambio_10min = ((precio_actual - precio_1h) / precio_1h) * 100 if precio_1h > 0 else 0
+    cambio_30min = ((precio_actual - precio_30min) / precio_30min) * 100 if precio_30min > 0 else 0
+    cambio_1hora = ((precio_actual - precio_1hora) / precio_1hora) * 100 if precio_1hora > 0 else 0
+    cambio_2h = ((precio_actual - precio_2h) / precio_2h) * 100 if precio_2h > 0 else 0
+    
+    promedio = sum(precios) / len(precios)
+    volatilidad = (max(precios) - min(precios)) / promedio * 100 if promedio > 0 else 0
+    
+    soporte = min(precios[-12:]) if len(precios) >= 12 else min(precios)
+    resistencia = max(precios[-12:]) if len(precios) >= 12 else max(precios)
+    
+    if len(precios) >= 3:
+        momentum = (precios[-1] - precios[-3]) / 3
+    else:
+        momentum = 0
+    
+    if len(precios) >= 14:
+        ganancias = 0
+        perdidas = 0
+        for i in range(-14, 0):
+            diff = precios[i] - precios[i-1]
+            if diff > 0:
+                ganancias += diff
+            else:
+                perdidas += abs(diff)
+        if perdidas > 0:
+            rsi = 100 - (100 / (1 + (ganancias / perdidas)))
+        else:
+            rsi = 100
+    else:
+        rsi = 50
+    
+    puntaje = 0
+    
+    if cambio_10min > 0.5:
+        puntaje += 3
+    elif cambio_10min > 0.2:
+        puntaje += 2
+    elif cambio_10min > 0.05:
+        puntaje += 1
+    elif cambio_10min < -0.5:
+        puntaje -= 3
+    elif cambio_10min < -0.2:
+        puntaje -= 2
+    elif cambio_10min < -0.05:
+        puntaje -= 1
+    
+    if cambio_30min > 1.0:
+        puntaje += 2
+    elif cambio_30min > 0.3:
+        puntaje += 1
+    elif cambio_30min < -1.0:
+        puntaje -= 2
+    elif cambio_30min < -0.3:
+        puntaje -= 1
+    
+    if precio_actual > promedio * 1.01:
+        puntaje += 2
+    elif precio_actual > promedio * 1.005:
+        puntaje += 1
+    elif precio_actual < promedio * 0.99:
+        puntaje -= 2
+    elif precio_actual < promedio * 0.995:
+        puntaje -= 1
+    
+    if momentum > 0.05:
+        puntaje += 2
+    elif momentum > 0.01:
+        puntaje += 1
+    elif momentum < -0.05:
+        puntaje -= 2
+    elif momentum < -0.01:
+        puntaje -= 1
+    
+    if rsi > 70:
+        puntaje -= 1
+    elif rsi < 30:
+        puntaje += 1
+    
+    if puntaje >= 5:
+        tendencia = "🚀 FUERTEMENTE ALCISTA"
+        emoji = "🟢"
+        prediccion = "📈 Subiendo fuerte, momento de COMPRAR"
+        confianza = "Alta"
+    elif puntaje >= 2:
+        tendencia = "📈 ALCISTA"
+        emoji = "🟢"
+        prediccion = "📈 Tendencia positiva, observa el mercado"
+        confianza = "Media-Alta"
+    elif puntaje >= 0:
+        tendencia = "➡️ NEUTRAL"
+        emoji = "🟡"
+        prediccion = "⏳ Mercado lateral, espera señal clara"
+        confianza = "Baja"
+    elif puntaje >= -2:
+        tendencia = "📉 BAJISTA"
+        emoji = "🔴"
+        prediccion = "📉 Tendencia negativa, observa con cuidado"
+        confianza = "Media-Alta"
+    else:
+        tendencia = "🔻 FUERTEMENTE BAJISTA"
+        emoji = "🔴"
+        prediccion = "📉 Bajando fuerte, momento de VENDER"
+        confianza = "Alta"
+    
+    if puntaje >= 5:
+        recomendacion = "💰 COMPRA - El mercado está en fuerte alza"
+    elif puntaje >= 2:
+        recomendacion = "👀 OBSERVA - Tendencia alcista moderada"
+    elif puntaje >= 0:
+        recomendacion = "⏳ ESPERA - Mercado sin dirección clara"
+    elif puntaje >= -2:
+        recomendacion = "👀 OBSERVA - Tendencia bajista moderada"
+    else:
+        recomendacion = "⚠️ VENDE - Fuerte tendencia bajista"
+    
+    return {
+        'precio_actual': precio_actual,
+        'cambio_10min': cambio_10min,
+        'cambio_30min': cambio_30min,
+        'cambio_1hora': cambio_1hora,
+        'cambio_2h': cambio_2h,
+        'promedio': promedio,
+        'volatilidad': volatilidad,
+        'soporte': soporte,
+        'resistencia': resistencia,
+        'momentum': momentum,
+        'rsi': rsi,
+        'puntaje': puntaje,
+        'tendencia': tendencia,
+        'emoji': emoji,
+        'prediccion': prediccion,
+        'confianza': confianza,
+        'recomendacion': recomendacion,
+        'muestras': len(precios)
+    }, None
+
+def mostrar_analisis_mercado(chat_id):
+    """
+    Muestra el análisis completo del mercado
+    """
+    analisis, error = analizar_tendencia_mercado('VES')
+    
+    if error:
+        mensaje = f"⚠️ {error}"
+        enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+        return
+    
+    mensaje = f"""📊 *ANÁLISIS DE MERCADO VES*
+
+{analisis['emoji']} *Tendencia:* {analisis['tendencia']}
+🕐 {datetime.now().strftime('%H:%M:%S')}
+
+📈 *Precio Actual:*
+{analisis['precio_actual']:.2f} Bs
+📊 *Promedio:* {analisis['promedio']:.2f} Bs
+⚡ *Volatilidad:* {analisis['volatilidad']:.1f}%
+
+📊 *Cambios (últimos periodos):*
+• 10 min: {analisis['cambio_10min']:+.2f}%
+• 30 min: {analisis['cambio_30min']:+.2f}%
+• 1 hora: {analisis['cambio_1hora']:+.2f}%
+• 2 horas: {analisis['cambio_2h']:+.2f}%
+
+📐 *Niveles Clave:*
+• Soporte: {analisis['soporte']:.2f} Bs
+• Resistencia: {analisis['resistencia']:.2f} Bs
+
+📊 *Indicadores Técnicos:*
+• Momentum: {analisis['momentum']:+.4f}
+• RSI: {analisis['rsi']:.1f}
+• Puntaje: {analisis['puntaje']:+.1f}/10
+
+🔮 *Predicción:* {analisis['prediccion']}
+🎯 *Confianza:* {analisis['confianza']}
+
+💡 *Recomendación:* {analisis['recomendacion']}
+
+📊 *Muestras analizadas:* {analisis['muestras']} (cada 1 minuto)
+🔄 *Actualización automática:* Cada 10 minutos
+"""
+    
+    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+
+# ==================== SISTEMA DE PREDICCIONES CON PRECISIÓN ====================
+
+def guardar_prediccion(analisis):
+    """
+    Guarda una predicción en el historial
+    """
+    global historial_predicciones, estadisticas_predicciones
+    
+    prediccion = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'precio_actual': analisis['precio_actual'],
+        'puntaje': analisis['puntaje'],
+        'tendencia': analisis['tendencia'],
+        'prediccion': analisis['prediccion'],
+        'recomendacion': analisis['recomendacion'],
+        'rsi': analisis['rsi'],
+        'momentum': analisis['momentum'],
+        'cambio_10min': analisis['cambio_10min'],
+        'verificada': False,
+        'acertada': False,
+        'precio_verificacion': None
+    }
+    
+    historial_predicciones.append(prediccion)
+    estadisticas_predicciones['ultima_prediccion'] = prediccion
+    estadisticas_predicciones['total_predicciones'] += 1
+
+def verificar_predicciones():
+    """
+    Verifica las predicciones anteriores comparando con el precio actual
+    """
+    global historial_predicciones, estadisticas_predicciones
+    
+    if len(historial_predicciones) < 2:
+        return
+    
+    compra_ves, venta_ves = obtener_precios_con_cache('VES')
+    if not compra_ves:
+        return
+    
+    precio_actual = compra_ves
+    
+    for prediccion in historial_predicciones:
+        if not prediccion['verificada']:
+            tiempo_prediccion = datetime.strptime(prediccion['timestamp'], '%Y-%m-%d %H:%M:%S')
+            tiempo_actual = datetime.now()
+            minutos_transcurridos = (tiempo_actual - tiempo_prediccion).total_seconds() / 60
+            
+            if minutos_transcurridos >= 30:
+                precio_prediccion = prediccion['precio_actual']
+                cambio_real = ((precio_actual - precio_prediccion) / precio_prediccion) * 100
+                
+                acertada = False
+                
+                if 'ALCISTA' in prediccion['tendencia'] and cambio_real > 0.3:
+                    acertada = True
+                elif 'BAJISTA' in prediccion['tendencia'] and cambio_real < -0.3:
+                    acertada = True
+                elif 'NEUTRAL' in prediccion['tendencia'] and abs(cambio_real) <= 0.3:
+                    acertada = True
+                elif 'FUERTEMENTE ALCISTA' in prediccion['tendencia'] and cambio_real > 0.5:
+                    acertada = True
+                elif 'FUERTEMENTE BAJISTA' in prediccion['tendencia'] and cambio_real < -0.5:
+                    acertada = True
+                
+                prediccion['verificada'] = True
+                prediccion['acertada'] = acertada
+                prediccion['precio_verificacion'] = precio_actual
+                prediccion['cambio_real'] = cambio_real
+                
+                if acertada:
+                    estadisticas_predicciones['aciertos'] += 1
+                else:
+                    estadisticas_predicciones['fallos'] += 1
+                
+                total = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
+                if total > 0:
+                    estadisticas_predicciones['precision'] = (estadisticas_predicciones['aciertos'] / total) * 100
+
+def obtener_estadisticas_precision():
+    """
+    Retorna estadísticas detalladas de precisión del bot
+    """
+    global estadisticas_predicciones, historial_predicciones
+    
+    total = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
+    
+    ultimas = list(historial_predicciones)[-10:] if len(historial_predicciones) > 0 else []
+    
+    precision_alcista = 0
+    precision_bajista = 0
+    precision_neutral = 0
+    total_alcista = 0
+    total_bajista = 0
+    total_neutral = 0
+    
+    for p in historial_predicciones:
+        if p['verificada']:
+            if 'ALCISTA' in p['tendencia'] and 'FUERTEMENTE' not in p['tendencia']:
+                total_alcista += 1
+                if p['acertada']:
+                    precision_alcista += 1
+            elif 'BAJISTA' in p['tendencia'] and 'FUERTEMENTE' not in p['tendencia']:
+                total_bajista += 1
+                if p['acertada']:
+                    precision_bajista += 1
+            elif 'NEUTRAL' in p['tendencia']:
+                total_neutral += 1
+                if p['acertada']:
+                    precision_neutral += 1
+    
+    precision_alcista = (precision_alcista / total_alcista * 100) if total_alcista > 0 else 0
+    precision_bajista = (precision_bajista / total_bajista * 100) if total_bajista > 0 else 0
+    precision_neutral = (precision_neutral / total_neutral * 100) if total_neutral > 0 else 0
+    
+    return {
+        'total_predicciones': estadisticas_predicciones['total_predicciones'],
+        'verificadas': estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos'],
+        'aciertos': estadisticas_predicciones['aciertos'],
+        'fallos': estadisticas_predicciones['fallos'],
+        'precision_general': estadisticas_predicciones['precision'],
+        'precision_alcista': precision_alcista,
+        'precision_bajista': precision_bajista,
+        'precision_neutral': precision_neutral,
+        'ultimas': ultimas
+    }
+
+def mostrar_historial_predicciones(chat_id):
+    """
+    Muestra el historial de predicciones y precisión del bot
+    """
+    stats = obtener_estadisticas_precision()
+    
+    mensaje = f"""📊 *HISTORIAL DE PREDICCIONES*
+
+🎯 *Precisión del Bot:*
+• Total predicciones: {stats['total_predicciones']}
+• Verificadas: {stats['verificadas']}
+• ✅ Aciertos: {stats['aciertos']}
+• ❌ Fallos: {stats['fallos']}
+• 📈 Precisión general: {stats['precision_general']:.1f}%
+
+📊 *Precisión por tendencia:*
+• 📈 Alcistas: {stats['precision_alcista']:.1f}%
+• 📉 Bajistas: {stats['precision_bajista']:.1f}%
+• ➡️ Neutral: {stats['precision_neutral']:.1f}%
+
+📋 *Últimas 10 predicciones:*
+"""
+    
+    if stats['ultimas']:
+        for i, p in enumerate(reversed(stats['ultimas']), 1):
+            estado = "✅" if p.get('acertada', False) else "❌" if p.get('verificada', False) else "⏳"
+            tendencia = p['tendencia'][:20]
+            
+            if p.get('verificada', False):
+                cambio = f"{p.get('cambio_real', 0):+.2f}%"
+            else:
+                cambio = "⏳ Pendiente"
+            
+            mensaje += f"\n{i}. {estado} {tendencia}... | {cambio}"
+    
+    mensaje += f"""
+
+💡 *Recomendación:* 
+{ '✅ El bot está siendo preciso, confía en sus predicciones' if stats['precision_general'] > 60 else '⚠️ El bot está aprendiendo, toma las predicciones con precaución' }
+
+🕐 Última actualización: {datetime.now().strftime('%H:%M:%S')}
+"""
+    
+    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+
+def mostrar_estadisticas_detalladas(chat_id):
+    """
+    Muestra estadísticas detalladas con gráfico de texto
+    """
+    stats = obtener_estadisticas_precision()
+    
+    precision = stats['precision_general']
+    barras = "█" * int(precision / 5) + "░" * (20 - int(precision / 5))
+    
+    mensaje = f"""📈 *ESTADÍSTICAS DETALLADAS*
+
+🎯 *Precisión General*
+[{barras}] {precision:.1f}%
+
+📊 *Distribución de Aciertos/Fallos*
+✅ Aciertos: {stats['aciertos']} ({'█' * int(stats['aciertos'] / max(stats['verificadas'], 1) * 20) if stats['verificadas'] > 0 else '░░░░░░░░░░░░░░░░░░░░'})
+❌ Fallos: {stats['fallos']} ({'█' * int(stats['fallos'] / max(stats['verificadas'], 1) * 20) if stats['verificadas'] > 0 else '░░░░░░░░░░░░░░░░░░░░'})
+
+📊 *Rendimiento por Tendencia*
+📈 Alcista:  {'▓' * int(stats['precision_alcista'] / 5)}{'░' * (20 - int(stats['precision_alcista'] / 5))} {stats['precision_alcista']:.1f}%
+📉 Bajista:  {'▓' * int(stats['precision_bajista'] / 5)}{'░' * (20 - int(stats['precision_bajista'] / 5))} {stats['precision_bajista']:.1f}%
+➡️ Neutral:  {'▓' * int(stats['precision_neutral'] / 5)}{'░' * (20 - int(stats['precision_neutral'] / 5))} {stats['precision_neutral']:.1f}%
+
+📋 *Resumen:*
+• Total predicciones: {stats['total_predicciones']}
+• Verificadas: {stats['verificadas']}
+• Ratio Acierto/Fallo: {stats['aciertos']}/{stats['fallos']}
+
+{'✅ El bot tiene buena precisión' if stats['precision_general'] > 65 else '📈 El bot está mejorando su precisión' if stats['precision_general'] > 50 else '⚠️ El bot necesita más datos para ser preciso'}
+
+🕐 {datetime.now().strftime('%H:%M:%S')}
+"""
+    
+    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+
 # ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
@@ -582,6 +1005,15 @@ Si te molesta, puedes silenciarme en cualquier momento.
         else:
             enviar_mensaje(chat_id, "❌ Solo el administrador puede ver esto", crear_teclado_opciones(chat_id))
     
+    elif texto == '📊 Análisis Mercado' or texto == '/analisis':
+        mostrar_analisis_mercado(chat_id)
+    
+    elif texto == '📋 Historial Predicciones' or texto == '/historial_predicciones':
+        mostrar_historial_predicciones(chat_id)
+    
+    elif texto == '📈 Estadísticas' or texto == '/estadisticas':
+        mostrar_estadisticas_detalladas(chat_id)
+    
     else:
         enviar_mensaje(chat_id, "Usa /start", crear_teclado_principal(chat_id))
 
@@ -635,8 +1067,10 @@ def actualizar_precios():
             if precios:
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
+                verificar_predicciones()
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
                 print(f"  📊 Historial VES: {len(historial_ves)} muestras")
+                print(f"  📊 Predicciones: {len(historial_predicciones)}")
             else:
                 print("  ❌ No se obtuvieron precios")
             
@@ -662,7 +1096,7 @@ def mantener_activo():
 
 @app.route('/')
 def home():
-    return f"✅ Bot activo 24/7\n👥 {len(usuarios_activos)} usuarios\n📊 {len(historial_ves)} muestras VES\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
+    return f"✅ Bot activo 24/7\n👥 {len(usuarios_activos)} usuarios\n📊 {len(historial_ves)} muestras VES\n📊 {len(historial_predicciones)} predicciones\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
 
 # ==================== MAIN ====================
 
@@ -690,6 +1124,7 @@ if __name__ == "__main__":
             print(f"  ❌ {m}: No disponible")
     
     print(f"\n📊 Historial VES inicial: {len(historial_ves)} muestras")
+    print(f"📊 Sistema de predicciones inicializado")
     
     print("\n🔔 ALERTAS ACTIVAS PARA TODOS:")
     print(f"  VES: ±{UMBRALES['VES']} Bs")
@@ -708,6 +1143,9 @@ if __name__ == "__main__":
     print("\n📋 + OPCIONES:")
     print("  - Precio VES, COP, PEN")
     print("  - Usuarios Registrados (ADMIN)")
+    print("  - Análisis Mercado")
+    print("  - Historial Predicciones")
+    print("  - Estadísticas")
     
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()

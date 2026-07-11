@@ -24,7 +24,7 @@ ultimo_update_id = 0
 
 app = Flask(__name__)
 
-# ==================== ALERTAS ====================
+# ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {
     'VES': 1.0,
     'COP': 50.0,
@@ -34,8 +34,38 @@ UMBRALES = {
 FLUCTUACION_UMBRAL = 0.8
 
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
-usuarios_activos = set()
-ARCHIVO_USUARIOS = "usuarios.txt"
+
+# ==================== CONTROL DE ACCESO AUTOMÁTICO por GRUPO ====================
+GRUPO_AUTORIZADO_ID = -5370892602  
+
+def usuario_esta_en_grupo(user_id):
+    """Verifica en tiempo real si el usuario pertenece al grupo o canal de Telegram"""
+    if user_id == ADMIN_ID:
+        return True
+    
+    try:
+        url = URL_TELEGRAM + "getChatMember"
+        params = {"chat_id": GRUPO_AUTORIZADO_ID, "user_id": user_id}
+        response = requests.get(url, params=params, timeout=8)
+        
+        if response.status_code == 200:
+            resultado = response.json()
+            if resultado.get("ok"):
+                status = resultado["result"].get("status")
+                if status in ["creator", "administrator", "member"]:
+                    return True
+        return False
+    except Exception as e:
+        print(f"⚠️ Error al verificar miembro en Telegram: {e}")
+        return True
+
+# Mantener compatibilidad con funciones previas de mensajería masiva
+usuarios_activos = set([ADMIN_ID])
+def obtener_usuarios():
+    return list(usuarios_activos)
+def guardar_usuario(chat_id):
+    if chat_id not in usuarios_activos:
+        usuarios_activos.add(chat_id)
 
 # ==================== CACHÉ DE PRECIOS ====================
 cache_precios = {}
@@ -45,6 +75,10 @@ CACHE_DURACION = 30
 # ==================== HISTORIAL (SOLO VES) ====================
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
+
+# ==================== CONTROL DE SPAM Y ALERTAS CRÍTICAS ====================
+ultima_alerta_enviada = None         # Cooldown para notificaciones repetidas en Telegram
+ultimo_registro_prediccion = None    # Cooldown para limitar muestras idénticas en el historial
 
 # ==================== HISTORIAL DE PREDICCIONES ====================
 historial_predicciones = deque(maxlen=100)
@@ -56,36 +90,7 @@ estadisticas_predicciones = {
     'ultima_prediccion': None
 }
 
-# ==================== GESTIÓN DE USUARIOS ====================
-def cargar_usuarios():
-    global usuarios_activos
-    try:
-        if os.path.exists(ARCHIVO_USUARIOS):
-            with open(ARCHIVO_USUARIOS, 'r') as f:
-                for linea in f:
-                    try:
-                        usuarios_activos.add(int(linea.strip()))
-                    except:
-                        pass
-            print(f"✅ {len(usuarios_activos)} usuarios cargados")
-    except:
-        print("📝 No hay usuarios guardados")
-
-def guardar_usuario(chat_id):
-    global usuarios_activos
-    if chat_id not in usuarios_activos:
-        usuarios_activos.add(chat_id)
-        try:
-            with open(ARCHIVO_USUARIOS, 'a') as f:
-                f.write(f"{chat_id}\n")
-            print(f"✅ Nuevo usuario: {chat_id}")
-        except:
-            pass
-
-def obtener_usuarios():
-    return list(usuarios_activos)
-
-# ==================== FUNCIONES ====================
+# ==================== FUNCIONES BASE DE TELEGRAM ====================
 
 def enviar_mensaje(chat_id, texto, teclado=None):
     try:
@@ -330,7 +335,7 @@ def verificar_fluctuacion_tasas():
                 time.sleep(0.05)
             except:
                 pass
-        print(f"🔔 Alerta de fluctuación enviada a todos los usuarios")
+        print(f"🔔 Alerta de fluctuación enviada a la lista de control.")
 
     ultimas_tasas_cruzadas = tasas_actuales.copy()
     guardar_tasas_anteriores()
@@ -368,7 +373,6 @@ def obtener_analisis_ves():
         'minimo': precio_min,
         'tendencia': tendencia,
         'muestras': len(precios)
-    }
 
 # ==================== ALERTAS DE PRECIO ====================
 
@@ -417,7 +421,7 @@ def verificar_alertas(precios):
                 time.sleep(0.05)
 
                 if moneda in ['COP', 'PEN']:
-                    enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} enviada a {len(usuarios)} usuarios*")
+                    enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} procesada con éxito.*")
 
         for moneda in ['VES', 'COP', 'PEN']:
             if moneda in precios and precios[moneda]:
@@ -524,34 +528,27 @@ def mostrar_historial_ves(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== NUEVO REEMPLAZO: ANÁLISIS CUANTITATIVO DE VOLUMEN (P2P ORDER FLOW) ====================
+# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (P2P ORDER FLOW) ====================
 
 def analizar_tendencia_mercado(moneda='VES'):
-    """
-    Analiza el flujo de órdenes P2P y calcula el Delta de Volumen cuantitativo
-    para predecir movimientos de precio a corto plazo (Sustituye la lógica vieja).
-    """
     try:
         url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
-        
-        # 1. Extraer volumen total del lado de los Compradores Anunciantes (Demanda de fiat/Venta Cripto)
+
         vol_demanda = 0.0
         precio_compra_ref = 0.0
         data_sell = {"asset": "USDT", "fiat": moneda, "tradeType": "SELL", "page": 1, "rows": 15, "payTypes": []}
-        
+
         r_sell = requests.post(url, json=data_sell, headers=headers, timeout=10)
         if r_sell.status_code == 200 and r_sell.json().get('data'):
             anuncios = r_sell.json()['data']
             precio_compra_ref = float(anuncios[0]['adv']['price'])
             for adv in anuncios:
-                # Estimamos el volumen combinando el balance disponible y los límites del libro
                 vol_demanda += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
 
-        # 2. Extraer volumen total del lado de los Vendedores Anunciantes (Oferta de fiat/Compra Cripto)
         vol_oferta = 0.0
         data_buy = {"asset": "USDT", "fiat": moneda, "tradeType": "BUY", "page": 1, "rows": 15, "payTypes": []}
-        
+
         r_buy = requests.post(url, json=data_buy, headers=headers, timeout=10)
         if r_buy.status_code == 200 and r_buy.json().get('data'):
             anuncios = r_buy.json()['data']
@@ -561,13 +558,11 @@ def analizar_tendencia_mercado(moneda='VES'):
         if vol_demanda == 0 or vol_oferta == 0:
             return None, "⚠️ API temporalmente sin data de profundidad de volumen."
 
-        # 3. Métricas cuantitativas del Order Flow
         vol_total = vol_demanda + vol_oferta
         delta_volumen = vol_demanda - vol_oferta
-        fuerza_mercado = (delta_volumen / vol_total) * 100  # Rango de -100% a +100%
+        fuerza_mercado = (delta_volumen / vol_total) * 100  
 
-        # Umbrales lógicos de desequilibrio financiero (Porcentaje de dominancia X)
-        porcentaje_umbral_alcista = 12.0  # Dominancia clara de presión compradora
+        porcentaje_umbral_alcista = 12.0  
         porcentaje_umbral_bajista = -12.0
 
         if fuerza_mercado >= porcentaje_umbral_alcista:
@@ -592,10 +587,9 @@ def analizar_tendencia_mercado(moneda='VES'):
             recomendacion = "⏳ ESPERA - Rango lateral controlado"
             puntaje = 0
 
-        # Llenar la matriz de respuesta idéntica para no romper tus comandos existentes
         resultado = {
             'precio_actual': precio_compra_ref if precio_compra_ref > 0 else (historial_ves[-1] if historial_ves else 0.0),
-            'cambio_10min': fuerza_mercado, # Mapeamos la fuerza a este indicador para reutilizar tus textos
+            'cambio_10min': fuerza_mercado, 
             'cambio_30min': fuerza_mercado * 0.8,
             'cambio_1hora': fuerza_mercado * 0.5,
             'cambio_2h': fuerza_mercado * 0.2,
@@ -603,7 +597,7 @@ def analizar_tendencia_mercado(moneda='VES'):
             'volatilidad': abs(fuerza_mercado),
             'soporte': precio_compra_ref * 0.99,
             'resistencia': precio_compra_ref * 1.01,
-            'momentum': delta_volumen / 1000000, # Normalizado en millones
+            'momentum': delta_volumen / 1000000, 
             'rsi': 50 + (fuerza_mercado / 2),
             'puntaje': puntaje,
             'tendencia': tendencia,
@@ -619,9 +613,6 @@ def analizar_tendencia_mercado(moneda='VES'):
         return None, f"❌ Error en análisis de volumen: {str(e)}"
 
 def mostrar_analisis_mercado(chat_id):
-    """
-    Muestra el análisis completo del mercado
-    """
     analisis, error = analizar_tendencia_mercado('VES')
 
     if error:
@@ -651,9 +642,6 @@ def mostrar_analisis_mercado(chat_id):
 # ==================== SISTEMA DE PREDICCIONES CON PRECISIÓN ====================
 
 def guardar_prediccion(analisis):
-    """
-    Guarda una predicción en el historial
-    """
     global historial_predicciones, estadisticas_predicciones
 
     prediccion = {
@@ -676,9 +664,6 @@ def guardar_prediccion(analisis):
     estadisticas_predicciones['total_predicciones'] += 1
 
 def verificar_predicciones():
-    """
-    Verifica las predicciones anteriores comparando con el precio actual
-    """
     global historial_predicciones, estadisticas_predicciones
 
     if len(historial_predicciones) < 2:
@@ -724,13 +709,9 @@ def verificar_predicciones():
                     estadisticas_predicciones['precision'] = (estadisticas_predicciones['aciertos'] / total) * 100
 
 def obtener_estadisticas_precision():
-    """
-    Retorna estadísticas detalladas de precisión del bot
-    """
     global estadisticas_predicciones, historial_predicciones
 
     total = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
-
     ultimas = list(historial_predicciones)[-10:] if len(historial_predicciones) > 0 else []
 
     precision_alcista = 0
@@ -772,9 +753,6 @@ def obtener_estadisticas_precision():
     }
 
 def mostrar_historial_predicciones(chat_id):
-    """
-    Muestra el historial de predicciones y precisión del bot
-    """
     stats = obtener_estadisticas_precision()
 
     mensaje = f"""📊 *HISTORIAL DE PREDICCIONES*
@@ -812,13 +790,9 @@ def mostrar_historial_predicciones(chat_id):
 
 🕐 Última actualización: {datetime.now().strftime('%H:%M:%S')}
 """
-
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
 def mostrar_estadisticas_detalladas(chat_id):
-    """
-    Muestra estadísticas detalladas con gráfico de texto
-    """
     stats = obtener_estadisticas_precision()
 
     precision = stats['precision_general']
@@ -847,12 +821,22 @@ def mostrar_estadisticas_detalladas(chat_id):
 
 🕐 {datetime.now().strftime('%H:%M:%S')}
 """
-
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
 # ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
+    # FILTRO DINÁMICO POR GRUPO DE TELEGRAM
+    if not usuario_esta_en_grupo(chat_id):
+        mensaje_bloqueo = (
+            "❌ *Acceso Denegado*\n\n"
+            "Este bot es privado y exclusivo para miembros de nuestra comunidad.\n\n"
+            "⚠️ Para poder usarlo, debes pertenecer a nuestro grupo oficial. "
+            "Una vez dentro del grupo, vuelve aquí y presiona /start."
+        )
+        enviar_mensaje(chat_id, mensaje_bloqueo)
+        return
+
     print(f"📩 {texto}")
     guardar_usuario(chat_id)
 
@@ -869,8 +853,7 @@ Herramientas disponibles:
 📈 Historial de brecha VES → Últimas 24h
 
 🔔 Alertas automáticas:
-Activo por cambios de 1 Bs en la tasa VES o por anomalías críticas en el Delta de Volumen P2P.
-Si te molesta, puedes silenciarme en cualquier momento.
+Activo por cambios en las tasas o por anomalías críticas en el Delta de Volumen P2P.
 """
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
@@ -910,9 +893,9 @@ Si te molesta, puedes silenciarme en cualquier momento.
         if chat_id == ADMIN_ID:
             usuarios = obtener_usuarios()
             if usuarios:
-                mensaje = f"👥 *USUARIOS REGISTRADOS*\n\nTotal: {len(usuarios)}\n\n"
+                mensaje = f"👥 *SISTEMA AUTOMÁTICO ACTIVO*\n\nTotal interactuando: {len(usuarios)}\n\nEl bot verifica accesos en tiempo real mediante Rose."
                 for uid in usuarios:
-                    mensaje += f"• `{uid}`\n"
+                    mensaje += f"\n• `{uid}`"
             else:
                 mensaje = "📝 No hay usuarios registrados"
             enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
@@ -963,10 +946,10 @@ def recibir_mensajes():
 # ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN ====================
 
 def actualizar_precios():
+    global ultima_alerta_enviada, ultimo_registro_prediccion
     while True:
         try:
             print(f"\n🔄 Actualizando... {datetime.now().strftime('%H:%M:%S')}")
-            print(f"👥 Usuarios: {len(usuarios_activos)}")
 
             precios = {}
             for moneda in ['VES', 'COP', 'PEN']:
@@ -981,31 +964,45 @@ def actualizar_precios():
             if precios:
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
-                
+
                 # Ejecutar análisis cuantitativo automático para registrar predicción
                 analisis, err = analizar_tendencia_mercado('VES')
                 if analisis and not err:
-                    guardar_prediccion(analisis)
-                    verificar_predicciones()
+                    ahora = datetime.now()
+
+                    # 1. SOLUCIÓN A LOS FALLOS EN HISTORIAL (Frecuencia controlada cada 15 Minutos)
+                    if ultimo_registro_prediccion is None or (ahora - ultimo_registro_prediccion).total_seconds() >= 900:
+                        guardar_prediccion(analisis)
+                        ultimo_registro_prediccion = ahora
+                        print("🔮 Nueva predicción cuantitativa registrada formalmente.")
                     
-                    # ALERTAS BASADAS EN FLUCTUACIÓN DEL DELTA DE VOLUMEN X (Si es agresivo, alerta push)
+                    verificar_predicciones()
+
+                    # 2. SOLUCIÓN AL SPAM CRÍTICO EN NOTIFICACIONES (Filtro Cooldown de 15 Minutos)
                     if analisis['puntaje'] == 7 or analisis['puntaje'] == -7:
-                        msg_alerta = f"🚨 *ALERTA DE VOLUMEN P2P CRÍTICA* 🚨\n\n"
-                        msg_alerta += f"🧭 *Dirección Proyectada:* {analisis['tendencia']}\n"
-                        msg_alerta += f"📊 *Desequilibrio de Órdenes:* {analisis['cambio_10min']:+.1f}%\n"
-                        msg_alerta += f"💡 *Acción:* {analisis['prediccion']}\n"
-                        msg_alerta += f"🕐 {datetime.now().strftime('%H:%M:%S')}"
-                        
-                        for usr in obtener_usuarios():
-                            try:
-                                enviar_mensaje(usr, msg_alerta)
-                                time.sleep(0.04)
-                            except:
-                                pass
+                        if ultima_alerta_enviada is None or (ahora - ultima_alerta_enviada).total_seconds() >= 900:
+                            msg_alerta = f"🚨 *ALERTA DE VOLUMEN P2P CRÍTICA* 🚨\n\n"
+                            msg_alerta += f"🧭 *Dirección Proyectada:* {analisis['tendencia']}\n"
+                            msg_alerta += f"📊 *Desequilibrio de Órdenes:* {analisis['cambio_10min']:+.1f}%\n"
+                            msg_alerta += f"💡 *Acción:* {analisis['prediccion']}\n"
+                            msg_alerta += f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+
+                            # Mandar alerta solo al administrador o usuarios activos que iniciaron el bot
+                            for usr in obtener_usuarios():
+                                try:
+                                    enviar_mensaje(usr, msg_alerta)
+                                    time.sleep(0.04)
+                                except:
+                                    pass
+                            
+                            ultima_alerta_enviada = ahora
+                            print("🔔 Alerta push enviada con éxito. Entrando en Cooldown de 15 min.")
+                        else:
+                            print("⏳ Alerta crítica de volumen omitida por filtro Cooldown.")
 
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
                 print(f"  📊 Historial VES: {len(historial_ves)} muestras")
-                print(f"  📊 Predicciones: {len(historial_predicciones)}")
+                print(f"  📊 Predicciones en memoria: {len(historial_predicciones)}")
             else:
                 print("  ❌ No se obtuvieron precios")
 
@@ -1031,7 +1028,7 @@ def mantener_activo():
 
 @app.route('/')
 def home():
-    return f"✅ Bot activo 24/7\n👥 {len(usuarios_activos)} usuarios\n📊 {len(historial_ves)} muestras VES\n📊 {len(historial_predicciones)} predicciones\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
+    return f"✅ Bot activo 24/7\n🔒 Canal/Grupo Vinculado: {GRUPO_AUTORIZADO_ID}\n📊 {len(historial_ves)} muestras VES\n📊 {len(historial_predicciones)} predicciones\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
 
 # ==================== MAIN ====================
 
@@ -1039,11 +1036,10 @@ if __name__ == "__main__":
     print("🚀 Bot iniciando en Railway...")
     print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
     print(f"✅ ADMIN_ID: {ADMIN_ID if ADMIN_ID else 'FALTANTE'}")
+    print(f"🔒 ID GRUPO VINCULADO: {GRUPO_AUTORIZADO_ID}")
     print(f"🕐 Zona horaria: Caracas (UTC -4)")
 
-    cargar_usuarios()
     cargar_tasas_anteriores()
-    print(f"👥 {len(usuarios_activos)} usuarios en memoria")
 
     print("\n📊 Probando conexión a Binance...")
     for m in ['VES', 'COP', 'PEN']:
@@ -1060,11 +1056,6 @@ if __name__ == "__main__":
 
     print(f"\n📊 Historial VES inicial: {len(historial_ves)} muestras")
     print(f"📊 Sistema de predicciones cuantitativas inicializado")
-
-    print("\n🔔 ALERTAS ACTIVAS PARA TODOS:")
-    print(f"  VES: ±{UMBRALES['VES']} Bs o desequilibrio en Order Flow")
-    print(f"  COP: ±{UMBRALES['COP']} COP")
-    print(f"  PEN: ±{UMBRALES['PEN']} PEN")
 
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()

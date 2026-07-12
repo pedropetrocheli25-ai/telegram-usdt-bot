@@ -509,7 +509,8 @@ def verificar_predicciones():
             tiempo_actual = datetime.now()
             minutos_transcurridos = (tiempo_actual - tiempo_prediccion).total_seconds() / 60
 
-            if minutos_transcurridos >= 30:
+            # MODIFICADO: Cambiado de 30 a 15 minutos para la evaluación
+            if minutos_transcurridos >= 15:
                 precio_prediccion = prediccion['precio_actual']
                 cambio_real = ((precio_actual - precio_prediccion) / precio_prediccion) * 100
 
@@ -977,7 +978,7 @@ def actualizar_precios():
                     verificar_predicciones()
 
                     # ---------------------------------------------------------------------------------
-                    # NOTIFICACIÓN 2: LÓGICA POR MOVIMIENTO MATEMÁTICO DIRECTO DEL 5% (SIN COOLDOWN)
+                    # NOTIFICACIÓN 2: LÓGICA POR MOVIMIENTO MATEMÁTICO DIRECTO DEL 2% (SIN COOLDOWN)
                     # ---------------------------------------------------------------------------------
                     if analisis['puntaje'] in [7, -7]:
                         delta_actual = analisis['cambio_10min']
@@ -986,8 +987,8 @@ def actualizar_precios():
                         if ultimo_delta_notificado is None:
                             debe_notificar = True
                         else:
-                            # Evalúa si se movió un 5% o más (ej: subió o bajó de 98.5% a 93.5% o viceversa)
-                            if abs(delta_actual - ultimo_delta_notificado) >= 5.0:
+                            # MODIFICADO: Evalúa si se movió un 2% o más (Cambiado de 5.0 a 2.0)
+                            if abs(delta_actual - ultimo_delta_notificado) >= 2.0:
                                 debe_notificar = True
 
                         if debe_notificar:
@@ -1007,9 +1008,9 @@ def actualizar_precios():
                             
                             # Actualizamos la marca de referencia del Delta y dejamos libre el paso continuo
                             ultimo_delta_notificado = delta_actual
-                            print(f"🔔 Alerta por movimiento >= 5% enviada. Delta base fijado en: {delta_actual:.2f}%")
+                            print(f"🔔 Alerta por movimiento >= 2% enviada. Delta base fijado en: {delta_actual:.2f}%")
                         else:
-                            print(f"⏳ Cambio en Delta menor al 5% (Actual: {delta_actual:.1f}% | Último: {ultimo_delta_notificado:.1f}%). Omisión activa.")
+                            print(f"⏳ Cambio en Delta menor al 2% (Actual: {delta_actual:.1f}% | Último: {ultimo_delta_notificado:.1f}%). Omisión activa.")
 
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
                 print(f"  📊 Historial VES: {len(historial_ves)} muestras")

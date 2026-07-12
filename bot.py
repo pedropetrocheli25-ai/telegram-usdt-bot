@@ -9,7 +9,10 @@ from flask import Flask
 
 # ==================== CONFIGURACIÓN ====================
 os.environ['TZ'] = 'America/Caracas'
-time.tzset()
+try:
+    time.tzset()
+except AttributeError:
+    pass  # Evita errores si se prueba localmente en Windows
 
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
@@ -24,16 +27,19 @@ ultimo_update_id = 0
 
 app = Flask(__name__)
 
-# ==================== ALERTAS DE PRECIO FINANCIERO ====================
+# ==================== ALERTAS DE PRECIO FINANCIERO (NOTIFICACIÓN 1) ====================
 UMBRALES = {
-    'VES': 1.0,
-    'COP': 50.0,
-    'PEN': 0.10
+    'VES': 1.0,    # 1.00 VES neto
+    'COP': 100.0,  # 100.00 COP neto
+    'PEN': 0.10    # 0.10 PEN neto
 }
 
 FLUCTUACION_UMBRAL = 0.8
 
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
+
+# ==================== VARIABLES DE CONTROL DE VOLUMEN (NOTIFICACIÓN 2) ====================
+ultimo_delta_notificado = None  # Guarda la fuerza del delta de la última alerta para aplicar filtro de 5%
 
 # ==================== CONTROL DE ACCESO AUTOMÁTICO por GRUPO ====================
 GRUPO_AUTORIZADO_ID = -5370892602  
@@ -77,7 +83,7 @@ historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
 
 # ==================== CONTROL DE SPAM Y ALERTAS CRÍTICAS ====================
-ultima_alerta_enviada = None         # Cooldown para notificaciones repetidas en Telegram
+ultima_alerta_enviada = None         # Mantenida por compatibilidad de variables globales
 ultimo_registro_prediccion = None    # Cooldown para limitar muestras idénticas en el historial
 
 # ==================== HISTORIAL DE PREDICCIONES ====================
@@ -647,7 +653,7 @@ def mostrar_estadisticas_detalladas(chat_id):
 """
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-# ==================== ALERTAS DE PRECIO ====================
+# ==================== ALERTAS DE PRECIO (NOTIFICACIÓN 1: AJUSTADA) ====================
 
 def verificar_alertas(precios):
     global ultimos_precios
@@ -672,6 +678,7 @@ def verificar_alertas(precios):
             cambio = abs(precio_actual - ultimos_precios[moneda])
             umbral = UMBRALES.get(moneda, 0)
 
+            # Activación exacta por dinero real solicitado
             if cambio >= umbral:
                 direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
                 emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
@@ -921,10 +928,10 @@ def recibir_mensajes():
             print(f"❌ Error polling: {e}")
             time.sleep(5)
 
-# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN ====================
+# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN (NOTIFICACIÓN 2: REDISEÑADA) ====================
 
 def actualizar_precios():
-    global ultima_alerta_enviada, ultimo_registro_prediccion, cache_precios, cache_tiempo
+    global ultima_alerta_enviada, ultimo_registro_prediccion, cache_precios, cache_tiempo, ultimo_delta_notificado
     
     while True:
         try:
@@ -959,7 +966,7 @@ def actualizar_precios():
                         precio_anterior = estadisticas_predicciones['ultima_prediccion']['precio_actual']
                         if precio_anterior > 0:
                             variacion_porcentaje = abs((precio_actual - precio_anterior) / precio_anterior) * 100
-                            if variacion_porcentaje >= 10.0:  # <--- Configuración del 10% solicitada
+                            if variacion_porcentaje >= 10.0:
                                 debe_guardar = True
 
                     if debe_guardar:
@@ -969,16 +976,28 @@ def actualizar_precios():
                     
                     verificar_predicciones()
 
-                    # Bloqueo estricto contra spam repetido en notificaciones
-                    if analisis['puntaje'] == 7 or analisis['puntaje'] == -7:
-                        if ultima_alerta_enviada is None or (ahora - ultima_alerta_enviada).total_seconds() >= 900:
-                            msg_alerta = f"🚨 *ALERTA DE VOLUMEN P2P CRÍTICA* 🚨\n\n"
-                            msg_alerta += f"🧭 *Dirección Proyectada:* {analisis['tendencia']}\n"
-                            msg_alerta += f"📊 *Desequilibrio de Órdenes:* {analisis['cambio_10min']:+.1f}%\n"
-                            msg_alerta += f"💡 *Acción:* {analisis['prediccion']}\n"
-                            msg_alerta += f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+                    # ---------------------------------------------------------------------------------
+                    # NOTIFICACIÓN 2: LÓGICA POR MOVIMIENTO MATEMÁTICO DIRECTO DEL 5% (SIN COOLDOWN)
+                    # ---------------------------------------------------------------------------------
+                    if analisis['puntaje'] in [7, -7]:
+                        delta_actual = analisis['cambio_10min']
+                        debe_notificar = False
 
-                            # Mandar alerta a los usuarios autorizados
+                        if ultimo_delta_notificado is None:
+                            debe_notificar = True
+                        else:
+                            # Evalúa si se movió un 5% o más (ej: subió o bajó de 98.5% a 93.5% o viceversa)
+                            if abs(delta_actual - ultimo_delta_notificado) >= 5.0:
+                                debe_notificar = True
+
+                        if debe_notificar:
+                            msg_alerta = f"🚨 *ALERTA DE VOLUMEN P2P CRÍTICA* 🚨\n\n" \
+                                         f"🧭 *Dirección Proyectada:* {analisis['tendencia']}\n" \
+                                         f"📊 *Desequilibrio de Órdenes:* {delta_actual:+.1f}%\n" \
+                                         f"💡 *Acción:* {analisis['prediccion']}\n" \
+                                         f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+
+                            # Mandar alerta push a los usuarios autorizados
                             for usr in obtener_usuarios():
                                 try:
                                     enviar_mensaje(usr, msg_alerta)
@@ -986,11 +1005,11 @@ def actualizar_precios():
                                 except:
                                     pass
                             
-                            # Actualizamos de forma global la estampa de tiempo
-                            ultima_alerta_enviada = ahora
-                            print("🔔 Alerta push enviada con éxito. Entrando en Cooldown de 15 min.")
+                            # Actualizamos la marca de referencia del Delta y dejamos libre el paso continuo
+                            ultimo_delta_notificado = delta_actual
+                            print(f"🔔 Alerta por movimiento >= 5% enviada. Delta base fijado en: {delta_actual:.2f}%")
                         else:
-                            print("⏳ Alerta crítica de volumen omitida por filtro Cooldown.")
+                            print(f"⏳ Cambio en Delta menor al 5% (Actual: {delta_actual:.1f}% | Último: {ultimo_delta_notificado:.1f}%). Omisión activa.")
 
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
                 print(f"  📊 Historial VES: {len(historial_ves)} muestras")

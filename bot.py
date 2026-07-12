@@ -536,7 +536,6 @@ def home():
     return "✅ Bot Online"
 
 if __name__ == "__main__":
-    cargar_tasas_anteriores()
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()
     threading.Thread(target=mantener_activo, daemon=True).start()

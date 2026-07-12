@@ -24,30 +24,26 @@ ultimo_update_id = 0
 
 app = Flask(__name__)
 
-# ==================== ALERTAS DE PRECIO FINANCIERO ====================
-UMBRALES = {
-    'VES': 1.0,
-    'COP': 50.0,
-    'PEN': 0.10
+# ==================== NOTIFICACIÓN 1: UMBRALES DE DINERO FIJO ====================
+UMBRALES_FIJOS = {
+    'VES': 1.0,    # 1.00 Bolívar neto
+    'COP': 100.0,  # 100.00 Pesos Colombianos neto
+    'PEN': 0.10    # 0.10 Soles Peruanos neto
 }
 
 FLUCTUACION_UMBRAL = 0.8
-
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 
 # ==================== CONTROL DE ACCESO AUTOMÁTICO por GRUPO ====================
 GRUPO_AUTORIZADO_ID = -5370892602  
 
 def usuario_esta_en_grupo(user_id):
-    """Verifica en tiempo real si el usuario pertenece al grupo o canal de Telegram"""
     if user_id == ADMIN_ID:
         return True
-    
     try:
         url = URL_TELEGRAM + "getChatMember"
         params = {"chat_id": GRUPO_AUTORIZADO_ID, "user_id": user_id}
         response = requests.get(url, params=params, timeout=8)
-        
         if response.status_code == 200:
             resultado = response.json()
             if resultado.get("ok"):
@@ -59,7 +55,6 @@ def usuario_esta_en_grupo(user_id):
         print(f"⚠️ Error al verificar miembro en Telegram: {e}")
         return True
 
-# Mantener compatibilidad con funciones previas de mensajería masiva
 usuarios_activos = set([ADMIN_ID])
 def obtener_usuarios():
     return list(usuarios_activos)
@@ -76,9 +71,10 @@ CACHE_DURACION = 30
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
 
-# ==================== CONTROL DE SPAM Y ALERTAS CRÍTICAS ====================
-ultima_alerta_enviada = None         # Cooldown para notificaciones repetidas en Telegram
-ultimo_registro_prediccion = None    # Cooldown para limitar muestras idénticas en el historial
+# ==================== NOTIFICACIÓN 2: CONTROL DE SPAM POR VOLUMEN ====================
+ultima_alerta_enviada = None         
+ultimo_delta_notificado = None       # Guarda el Delta de Volumen anterior para el filtro del 5%
+ultimo_registro_prediccion = None    
 
 # ==================== HISTORIAL DE PREDICCIONES ====================
 historial_predicciones = deque(maxlen=100)
@@ -104,34 +100,17 @@ def enviar_mensaje(chat_id, texto, teclado=None):
         return False
 
 def crear_teclado_principal(chat_id):
-    teclado = [
-        ["💰 Precio USDT"],
-        ["🪙 Tether USDT vs BCV"],
-        ["📈 Historial de brecha VES"]
-    ]
-
+    teclado = [["💰 Precio USDT"], ["🪙 Tether USDT vs BCV"], ["📈 Historial de brecha VES"]]
     if chat_id == ADMIN_ID:
         teclado.append(["🏦 Tasas de Cambio"])
-
     teclado.append(["📋 + Opciones"])
-
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_opciones(chat_id):
-    teclado = [
-        ["🇻🇪 Precio VES"],
-        ["🇨🇴 Precio COP"],
-        ["🇵🇪 Precio PEN"]
-    ]
-
+    teclado = [["🇻🇪 Precio VES"], ["🇨🇴 Precio COP"], ["🇵🇪 Precio PEN"]]
     if chat_id == ADMIN_ID:
         teclado.append(["👥 Usuarios Registrados"])
-
-    teclado.append(["📊 Análisis Mercado"])
-    teclado.append(["📋 Historial Predicciones"])
-    teclado.append(["📈 Estadísticas"])
-    teclado.append(["🔙 Volver al menú principal"])
-
+    teclado.append(["📊 Análisis Mercado"], ["📋 Historial Predicciones"], ["📈 Estadísticas"], ["🔙 Volver al menú principal"])
     return {"keyboard": teclado, "resize_keyboard": True}
 
 # ==================== PRECIOS CON CACHÉ ====================
@@ -139,16 +118,13 @@ def crear_teclado_opciones(chat_id):
 def obtener_precios_con_cache(fiat):
     global cache_precios, cache_tiempo
     ahora = time.time()
-
     if fiat in cache_precios and fiat in cache_tiempo:
         if ahora - cache_tiempo[fiat] < CACHE_DURACION:
             return cache_precios[fiat]['compra'], cache_precios[fiat]['venta']
-
     compra, venta = obtener_precios_p2p_reales(fiat)
     if compra and venta:
         cache_precios[fiat] = {'compra': compra, 'venta': venta}
         cache_tiempo[fiat] = ahora
-
     return compra, venta
 
 def obtener_precios_p2p_reales(fiat):
@@ -160,46 +136,22 @@ def obtener_precios_p2p_reales(fiat):
         compra = None
         try:
             r = requests.post(url, json=data, headers=headers, timeout=10)
-            if r.status_code == 200:
-                result = r.json()
-                if result.get('data'):
-                    precios = []
-                    for a in result['data']:
-                        try:
-                            p = float(a['adv']['price'])
-                            if 1 < p < 100000:
-                                precios.append(p)
-                        except:
-                            pass
-                    if precios:
-                        compra = min(precios)
-        except:
-            pass
+            if r.status_code == 200 and r.json().get('data'):
+                precios = [float(a['adv']['price']) for a in r.json()['data'] if 1 < float(a['adv']['price']) < 100000]
+                if precios: compra = min(precios)
+        except: pass
 
         data = {"asset": "USDT", "fiat": fiat, "tradeType": "BUY", "page": 1, "rows": 10, "payTypes": []}
         venta = None
         try:
             r = requests.post(url, json=data, headers=headers, timeout=10)
-            if r.status_code == 200:
-                result = r.json()
-                if result.get('data'):
-                    precios = []
-                    for a in result['data']:
-                        try:
-                            p = float(a['adv']['price'])
-                            if 1 < p < 100000:
-                                precios.append(p)
-                        except:
-                            pass
-                    if precios:
-                        venta = max(precios)
-        except:
-            pass
+            if r.status_code == 200 and r.json().get('data'):
+                precios = [float(a['adv']['price']) for a in r.json()['data'] if 1 < float(a['adv']['price']) < 100000]
+                if precios: venta = max(precios)
+        except: pass
 
-        if compra is None or venta is None:
-            return None, None
-        if compra < venta:
-            compra, venta = venta, compra
+        if compra is None or venta is None: return None, None
+        if compra < venta: compra, venta = venta, compra
         return compra, venta
     except:
         return None, None
@@ -210,113 +162,63 @@ def calcular_tasas_cruzadas():
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     compra_cop, venta_cop = obtener_precios_con_cache('COP')
     compra_pen, venta_pen = obtener_precios_con_cache('PEN')
-
-    if not all([compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]):
-        return None
+    if not all([compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]): return None
 
     tasas = {}
-
-    # PERÚ (PEN)
     tasas['Perú → Venezuela'] = (venta_ves / compra_pen) * 0.95
     tasas['Venezuela → Perú'] = tasas['Perú → Venezuela'] + 15
-    if compra_pen and venta_cop:
-        tasas['Perú → Colombia'] = (1 / (compra_pen / venta_cop)) * 0.95
-    else:
-        tasas['Perú → Colombia'] = 0
+    tasas['Perú → Colombia'] = (1 / (compra_pen / venta_cop)) * 0.95 if compra_pen else 0
     tasas['Colombia → Perú'] = (compra_cop / venta_pen) * 1.06
-
-    # COLOMBIA (COP)
     tasas['Colombia → Venezuela'] = (compra_cop / venta_ves) * 1.06
-    if compra_ves and venta_cop:
-        tasas['Venezuela → Colombia'] = (1 / (compra_ves / venta_cop)) * 0.95
-    else:
-        tasas['Venezuela → Colombia'] = 0
+    tasas['Venezuela → Colombia'] = (1 / (compra_ves / venta_cop)) * 0.95 if compra_ves else 0
     tasas['Colombia → Brasil'] = (compra_cop / 5.10) * 1.06
-
-    # VENEZUELA (VES)
     tasas['Venezuela → Brasil'] = (compra_ves / 5.10) * 1.05
-
     return tasas
 
 def mostrar_tasas_cambio(chat_id):
     tasas = calcular_tasas_cruzadas()
-
     if not tasas:
-        mensaje = "❌ No se pudieron obtener los datos para calcular las tasas"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "❌ No se pudieron obtener los datos para calcular las tasas", crear_teclado_principal(chat_id))
         return
-
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     compra_cop, venta_cop = obtener_precios_con_cache('COP')
     compra_pen, venta_pen = obtener_precios_con_cache('PEN')
 
-    mensaje = f"🏦 *TASAS DE CAMBIO CRUZADAS*\n"
-    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-
-    mensaje += f"📊 *Precios de referencia:*\n"
-    mensaje += f"  🇻🇪 VES: Compra {compra_ves:.2f} | Venta {venta_ves:.2f}\n"
-    mensaje += f"  🇨🇴 COP: Compra {compra_cop:.2f} | Venta {venta_cop:.2f}\n"
-    mensaje += f"  🇵🇪 PEN: Compra {compra_pen:.2f} | Venta {venta_pen:.2f}\n\n"
-
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"🇵🇪 *PERÚ (PEN)*\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Perú → Venezuela']:.2f} Bs\n"
-    mensaje += f"  → 🇨🇴 Colombia: {tasas['Perú → Colombia']:.2f} COP\n\n"
-
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"🇨🇴 *COLOMBIA (COP)*\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Colombia → Venezuela']:.2f} Bs\n"
-    mensaje += f"  → 🇵🇪 Perú: {tasas['Colombia → Perú']:.2f} PEN\n"
-    mensaje += f"  → 🇧🇷 Brasil: {tasas['Colombia → Brasil']:.2f} BRL\n\n"
-
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"🇻🇪 *VENEZUELA (VES)*\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"  → 🇵🇪 Perú: {tasas['Venezuela → Perú']:.2f} PEN\n"
-    mensaje += f"  → 🇨🇴 Colombia: {tasas['Venezuela → Colombia']:.2f} COP\n"
-    mensaje += f"  → 🇧🇷 Brasil: {tasas['Venezuela → Brasil']:.2f} BRL"
-
+    mensaje = f"🏦 *TASAS DE CAMBIO CRUZADAS*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje += f"📊 *Precios de referencia:*\n  🇻🇪 VES: Compra {compra_ves:.2f}\n  🇨🇴 COP: Compra {compra_cop:.2f}\n  🇵🇪 PEN: Compra {compra_pen:.2f}\n\n"
+    mensaje += f"🇵🇪 *PERÚ (PEN)*\n  → 🇻🇪 Venezuela: {tasas['Perú → Venezuela']:.2f} Bs\n  → 🇨🇴 Colombia: {tasas['Perú → Colombia']:.2f} COP\n\n"
+    mensaje += f"🇨🇴 *COLOMBIA (COP)*\n  → 🇻🇪 Venezuela: {tasas['Colombia → Venezuela']:.2f} Bs\n  → 🇵🇪 Perú: {tasas['Colombia → Perú']:.2f} PEN\n\n"
+    mensaje += f"🇻🇪 *VENEZUELA (VES)*\n  → 🇵🇪 Perú: {tasas['Venezuela → Perú']:.2f} PEN\n  → 🇨🇴 Colombia: {tasas['Venezuela → Colombia']:.2f} COP"
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 # ==================== ALERTA DE FLUCTUACIÓN ====================
-
 ultimas_tasas_cruzadas = {}
 TASAS_ANTERIORES_ARCHIVO = "tasas_anteriores.json"
 
 def guardar_tasas_anteriores():
     try:
-        with open(TASAS_ANTERIORES_ARCHIVO, 'w') as f:
-            json.dump(ultimas_tasas_cruzadas, f)
-    except:
-        pass
+        with open(TASAS_ANTERIORES_ARCHIVO, 'w') as f: json.dump(ultimas_tasas_cruzadas, f)
+    except: pass
 
 def cargar_tasas_anteriores():
     global ultimas_tasas_cruzadas
     try:
         if os.path.exists(TASAS_ANTERIORES_ARCHIVO):
-            with open(TASAS_ANTERIORES_ARCHIVO, 'r') as f:
-                ultimas_tasas_cruzadas = json.load(f)
-    except:
-        pass
+            with open(TASAS_ANTERIORES_ARCHIVO, 'r') as f: ultimas_tasas_cruzadas = json.load(f)
+    except: pass
 
 def verificar_fluctuacion_tasas():
     global ultimas_tasas_cruzadas
-
     tasas_actuales = calcular_tasas_cruzadas()
-    if not tasas_actuales:
-        return
+    if not tasas_actuales: return
 
     if not ultimas_tasas_cruzadas:
         ultimas_tasas_cruzadas = tasas_actuales.copy()
         guardar_tasas_anteriores()
         return
 
-    mensaje = "⚠️ *ALERTA DE FLUCTUACIÓN DE TASAS* ⚠️\n"
-    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje = "⚠️ *ALERTA DE FLUCTUACIÓN DE TASAS* ⚠️\n\n"
     hubo_fluctuacion = False
-
     for clave, valor_actual in tasas_actuales.items():
         if clave in ultimas_tasas_cruzadas:
             valor_anterior = ultimas_tasas_cruzadas[clave]
@@ -324,55 +226,31 @@ def verificar_fluctuacion_tasas():
                 fluctuacion = abs((valor_actual - valor_anterior) / valor_anterior) * 100
                 if fluctuacion >= FLUCTUACION_UMBRAL:
                     direccion = "📈 SUBIÓ" if valor_actual > valor_anterior else "📉 BAJÓ"
-                    mensaje += f"• *{clave}*: {direccion} en {fluctuacion:.2f}%\n"
-                    mensaje += f"  Anterior: {valor_anterior:.4f} → Actual: {valor_actual:.4f}\n\n"
+                    mensaje += f"• *{clave}*: {direccion} en {fluctuacion:.2f}%\n  Anterior: {valor_anterior:.4f} → Actual: {valor_actual:.4f}\n\n"
                     hubo_fluctuacion = True
 
     if hubo_fluctuacion:
         for usuario in obtener_usuarios():
-            try:
-                enviar_mensaje(usuario, mensaje)
-                time.sleep(0.05)
-            except:
-                pass
-        print(f"🔔 Alerta de fluctuación enviada a la lista de control.")
-
+            try: enviar_mensaje(usuario, mensaje); time.sleep(0.05)
+            except: pass
     ultimas_tasas_cruzadas = tasas_actuales.copy()
     guardar_tasas_anteriores()
 
 # ==================== HISTORIAL ====================
-
 def guardar_historial_ves(precio):
     global precio_apertura_ves
     historial_ves.append(precio)
-    if precio_apertura_ves is None:
-        precio_apertura_ves = precio
-    print(f"📊 Historial VES: {len(historial_ves)} muestras")
+    if precio_apertura_ves is None: precio_apertura_ves = precio
 
 def obtener_analisis_ves():
-    if not historial_ves:
-        return None
+    if not historial_ves or len(historial_ves) < 2: return None
     precios = list(historial_ves)
-    if len(precios) < 2:
-        return None
-    precio_actual = precios[-1]
-    precio_inicio = precios[0]
-    cambio = precio_actual - precio_inicio
-    cambio_porcentaje = (cambio / precio_inicio) * 100 if precio_inicio != 0 else 0
-    precio_max = max(precios)
-    precio_min = min(precios)
-    tendencia = "↗️ Alcista" if len(precios) > 10 and precios[-1] > precios[-10] else "↘️ Bajista"
-    if len(precios) > 10 and abs(precios[-1] - precios[-10]) < 0.01:
-        tendencia = "➡️ Lateral"
+    cambio = precios[-1] - precios[0]
     return {
-        'actual': precio_actual,
-        'apertura': precio_inicio,
-        'cambio': cambio,
-        'cambio_porcentaje': cambio_porcentaje,
-        'maximo': precio_max,
-        'minimo': precio_min,
-        'tendencia': tendencia,
-        'muestras': len(precios)
+        'actual': precios[-1], 'apertura': precios[0], 'cambio': cambio,
+        'cambio_porcentaje': (cambio / precios[0]) * 100 if precios[0] != 0 else 0,
+        'maximo': max(precios), 'minimo': min(precios),
+        'tendencia': "↗️ Alcista" if precios[-1] > precios[-10] else "↘️ Bajista", 'muestras': len(precios)
     }
 
 # ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (P2P ORDER FLOW) ====================
@@ -385,551 +263,219 @@ def analizar_tendencia_mercado(moneda='VES'):
         vol_demanda = 0.0
         precio_compra_ref = 0.0
         data_sell = {"asset": "USDT", "fiat": moneda, "tradeType": "SELL", "page": 1, "rows": 15, "payTypes": []}
-
         r_sell = requests.post(url, json=data_sell, headers=headers, timeout=10)
         if r_sell.status_code == 200 and r_sell.json().get('data'):
             anuncios = r_sell.json()['data']
             precio_compra_ref = float(anuncios[0]['adv']['price'])
-            for adv in anuncios:
-                vol_demanda += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
+            vol_demanda = sum(float(adv['adv']['surplusAmount']) * float(adv['adv']['price']) for adv in anuncios)
 
         vol_oferta = 0.0
         data_buy = {"asset": "USDT", "fiat": moneda, "tradeType": "BUY", "page": 1, "rows": 15, "payTypes": []}
-
         r_buy = requests.post(url, json=data_buy, headers=headers, timeout=10)
         if r_buy.status_code == 200 and r_buy.json().get('data'):
-            anuncios = r_buy.json()['data']
-            for adv in anuncios:
-                vol_oferta += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
+            vol_oferta = sum(float(adv['adv']['surplusAmount']) * float(adv['adv']['price']) for adv in r_buy.json()['data'])
 
-        if vol_demanda == 0 or vol_oferta == 0:
-            return None, "⚠️ API temporalmente sin data de profundidad de volumen."
+        if vol_demanda == 0 or vol_oferta == 0: return None, "⚠️ API sin data de volumen."
 
         vol_total = vol_demanda + vol_oferta
-        delta_volumen = vol_demanda - vol_oferta
-        fuerza_mercado = (delta_volumen / vol_total) * 100  
+        fuerza_mercado = ((vol_demanda - vol_oferta) / vol_total) * 100  
 
-        porcentaje_umbral_alcista = 12.0  
-        porcentaje_umbral_bajista = -12.0
-
-        if fuerza_mercado >= porcentaje_umbral_alcista:
-            tendencia = "🚀 ALCISTA INMINENTE"
-            emoji = "🟢"
+        if fuerza_mercado >= 12.0:
+            tendencia, emoji, puntaje = "🚀 ALCISTA INMINENTE", "🟢", 7
             prediccion = "📈 Alta demanda absorbiendo liquidez. El precio tiende a SUBIR."
-            confianza = "Alta"
-            recomendacion = "💰 COMPRA - Volumen de tomadores presionando el libro"
-            puntaje = 7
-        elif fuerza_mercado <= porcentaje_umbral_bajista:
-            tendencia = "🔻 BAJISTA INMINENTE"
-            emoji = "🔴"
+            recomendacion = "💰 COMPRA - Volumen presionando el libro"
+        elif fuerza_mercado <= -12.0:
+            tendencia, emoji, puntaje = "🔻 BAJISTA INMINENTE", "🔴", -7
             prediccion = "📉 Exceso de oferta inundando los anuncios. El precio tiende a BAJAR."
-            confianza = "Alta"
-            recomendacion = "⚠️ VENDE - Acumulación agresiva en los muros de venta"
-            puntaje = -7
+            recomendacion = "⚠️ VENDE - Acumulación agresiva en muros"
         else:
-            tendencia = "➡️ NEUTRAL / ESTABLE"
-            emoji = "🟡"
+            tendencia, emoji, puntaje = "➡️ NEUTRAL / ESTABLE", "🟡", 0
             prediccion = "⏳ Oferta y demanda equilibradas en el P2P."
-            confianza = "Media"
-            recomendacion = "⏳ ESPERA - Rango lateral controlado"
-            puntaje = 0
+            recomendacion = "⏳ ESPERA - Rango lateral"
 
-        # Creación lineal del diccionario para asegurar compatibilidad estricta
-        resultado = {}
-        resultado['precio_actual'] = precio_compra_ref if precio_compra_ref > 0 else (historial_ves[-1] if historial_ves else 0.0)
-        resultado['cambio_10min'] = fuerza_mercado
-        resultado['cambio_30min'] = fuerza_mercado * 0.8
-        resultado['cambio_1id'] = fuerza_mercado * 0.5
-        resultado['cambio_1hora'] = fuerza_mercado * 0.5
-        resultado['cambio_2h'] = fuerza_mercado * 0.2
-        resultado['promedio'] = vol_total / 2
-        resultado['volatilidad'] = abs(fuerza_mercado)
-        resultado['soporte'] = precio_compra_ref * 0.99
-        resultado['resistencia'] = precio_compra_ref * 1.01
-        resultado['momentum'] = delta_volumen / 1000000
-        resultado['rsi'] = 50 + (fuerza_mercado / 2)
-        resultado['puntaje'] = puntaje
-        resultado['tendencia'] = tendencia
-        resultado['emoji'] = emoji
-        resultado['prediccion'] = prediccion
-        resultado['confianza'] = confianza
-        resultado['recomendacion'] = recomendacion
-        resultado['muestras'] = len(historial_ves)
-
+        resultado = {
+            'precio_actual': precio_compra_ref if precio_compra_ref > 0 else (historial_ves[-1] if historial_ves else 0.0),
+            'cambio_10min': fuerza_mercado, 'puntaje': puntaje, 'tendencia': tendencia, 'emoji': emoji,
+            'prediccion': prediccion, 'confianza': "Alta" if puntaje != 0 else "Media", 'recomendacion': recommendation,
+            'momentum': (vol_demanda - vol_oferta) / 1000000, 'rsi': 50 + (fuerza_mercado / 2)
+        }
         return resultado, None
-
     except Exception as e:
-        return None, f"❌ Error en análisis de volumen: {str(e)}"
+        return None, f"❌ Error en análisis: {str(e)}"
 
-# ==================== SISTEMA DE PREDICCIONES CON PRECISIÓN ====================
+# ==================== SISTEMA DE PREDICCIONES ====================
 
 def guardar_prediccion(analisis):
     global historial_predicciones, estadisticas_predicciones
-
     prediccion = {
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'precio_actual': analisis['precio_actual'],
-        'puntaje': analisis['puntaje'],
-        'tendencia': analisis['tendencia'],
-        'prediccion': analisis['prediccion'],
-        'recomendacion': analisis['recomendacion'],
-        'rsi': analisis['rsi'],
-        'momentum': analisis['momentum'],
-        'cambio_10min': analisis['cambio_10min'],
-        'verificada': False,
-        'acertada': False,
-        'precio_verificacion': None
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'precio_actual': analisis['precio_actual'],
+        'puntaje': analisis['puntaje'], 'tendencia': analisis['tendencia'], 'prediccion': analisis['prediccion'],
+        'verificada': False, 'acertada': False, 'precio_verificacion': None
     }
-
     historial_predicciones.append(prediccion)
     estadisticas_predicciones['ultima_prediccion'] = prediccion
     estadisticas_predicciones['total_predicciones'] += 1
 
 def verificar_predicciones():
     global historial_predicciones, estadisticas_predicciones
+    if len(historial_predicciones) < 2: return
+    compra_ves, _ = obtener_precios_con_cache('VES')
+    if not compra_ves: return
 
-    if len(historial_predicciones) < 2:
-        return
-
-    compra_ves, venta_ves = obtener_precios_con_cache('VES')
-    if not compra_ves:
-        return
-
-    precio_actual = compra_ves
-
-    for prediccion in historial_predicciones:
-        if not prediccion['verificada']:
-            tiempo_prediccion = datetime.strptime(prediccion['timestamp'], '%Y-%m-%d %H:%M:%S')
-            tiempo_actual = datetime.now()
-            minutos_transcurridos = (tiempo_actual - tiempo_prediccion).total_seconds() / 60
-
-            if minutos_transcurridos >= 30:
-                precio_prediccion = prediccion['precio_actual']
-                cambio_real = ((precio_actual - precio_prediccion) / precio_prediccion) * 100
-
-                acertada = False
-
-                if 'ALCISTA' in prediccion['tendencia'] and cambio_real > 0.3:
-                    acertada = True
-                elif 'BAJISTA' in prediccion['tendencia'] and cambio_real < -0.3:
-                    acertada = True
-                elif 'NEUTRAL' in prediccion['tendencia'] and abs(cambio_real) <= 0.3:
-                    acertada = True
-
-                prediccion['verificada'] = True
-                prediccion['acertada'] = acertada
-                prediccion['precio_verificacion'] = precio_actual
-                prediccion['cambio_real'] = cambio_real
-
-                if acertada:
-                    estadisticas_predicciones['aciertos'] += 1
-                else:
-                    estadisticas_predicciones['fallos'] += 1
-
-                total = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
-                if total > 0:
-                    estadisticas_predicciones['precision'] = (estadisticas_predicciones['aciertos'] / total) * 100
+    for p in historial_predicciones:
+        if not p['verificada']:
+            minutos = (datetime.now() - datetime.strptime(p['timestamp'], '%Y-%m-%d %H:%M:%S')).total_seconds() / 60
+            if minutos >= 30:
+                cambio_real = ((compra_ves - p['precio_actual']) / p['precio_actual']) * 100
+                acertada = ('ALCISTA' in p['tendencia'] and cambio_real > 0.3) or ('BAJISTA' in p['tendencia'] and cambio_real < -0.3) or ('NEUTRAL' in p['tendencia'] and abs(cambio_real) <= 0.3)
+                p.update({'verificada': True, 'acertada': acertada, 'precio_verificacion': compra_ves, 'cambio_real': cambio_real})
+                if acertada: estadisticas_predicciones['aciertos'] += 1
+                else: estadisticas_predicciones['fallos'] += 1
+    total = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
+    if total > 0: estadisticas_predicciones['precision'] = (estadisticas_predicciones['aciertos'] / total) * 100
 
 def obtener_estadisticas_precision():
     global estadisticas_predicciones, historial_predicciones
+    return {
+        'total_predicciones': estadisticas_predicciones['total_predicciones'],
+        'verificadas': estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos'],
+        'aciertos': estadisticas_predicciones['aciertos'], 'fallos': estadisticas_predicciones['fallos'],
+        'precision_general': estadisticas_predicciones['precision'], 'ultimas': list(historial_predicciones)[-10:]
+    }
 
-    total = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
-    res = list(historial_predicciones)[-10:] if len(historial_predicciones) > 0 else []
-
-    precision_alcista = 0
-    precision_bajista = 0
-    precision_neutral = 0
-    total_alcista = 0
-    total_bajista = 0
-    total_neutral = 0
-
-    for p in historial_predicciones:
-        if p['verificada']:
-            if 'ALCISTA' in p['tendencia']:
-                total_alcista += 1
-                if p['acertada']:
-                    precision_alcista += 1
-            elif 'BAJISTA' in p['tendencia']:
-                total_bajista += 1
-                if p['acertada']:
-                    precision_bajista += 1
-            elif 'NEUTRAL' in p['tendencia']:
-                total_neutral += 1
-                if p['acertada']:
-                    precision_neutral += 1
-
-    precision_alcista = (precision_alcista / total_alcista * 100) if total_alcista > 0 else 0
-    precision_bajista = (precision_bajista / total_bajista * 100) if total_bajista > 0 else 0
-    precision_neutral = (precision_neutral / total_neutral * 100) if total_neutral > 0 else 0
-
-    # Retorno seguro estructurado por variables lineales
-    salida = {}
-    salida['total_predicciones'] = estadisticas_predicciones['total_predicciones']
-    salida['verificadas'] = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
-    salida['aciertos'] = estadisticas_predicciones['aciertos']
-    salida['fallos'] = estadisticas_predicciones['fallos']
-    salida['precision_general'] = estadisticas_predicciones['precision']
-    salida['precision_alcista'] = precision_alcista
-    salida['precision_bajista'] = precision_bajista
-    salida['precision_neutral'] = precision_neutral
-    salida['ultimas'] = res
-    
-    return salida
-
-def mostrar_historial_predicciones(chat_id):
-    stats = obtener_estadisticas_precision()
-
-    mensaje = f"""📊 *HISTORIAL DE PREDICCIONES*
-
-🎯 *Precisión del Bot:*
-• Total predicciones: {stats['total_predicciones']}
-• Verificadas: {stats['verificadas']}
-• ✅ Aciertos: {stats['aciertos']}
-• ❌ Fallos: {stats['fallos']}
-• 📈 Precisión general: {stats['precision_general']:.1f}%
-
-📊 *Precisión por tendencia:*
-• 📈 Alcistas: {stats['precision_alcista']:.1f}%
-• 📉 Bajistas: {stats['precision_bajista']:.1f}%
-• ➡️ Neutral: {stats['precision_neutral']:.1f}%
-
-📋 *Últimas 10 predicciones:*
-"""
-
-    if stats['ultimas']:
-        for i, p in enumerate(reversed(stats['ultimas']), 1):
-            estado = "✅" if p.get('acertada', False) else "❌" if p.get('verificada', False) else "⏳"
-            tendencia = p['tendencia'][:20]
-
-            if p.get('verificada', False):
-                cambio = f"{p.get('cambio_real', 0):+.2f}%"
-            else:
-                cambio = "⏳ Pendiente"
-
-            mensaje += f"\n{i}. {estado} {tendencia}... | {cambio}"
-
-    mensaje += f"""
-
-💡 *Recomendación:* { '✅ El bot está siendo preciso, confía en sus predicciones' if stats['precision_general'] > 60 else '⚠️ El bot está aprendiendo, toma las predicciones con precaución' }
-
-🕐 Última actualización: {datetime.now().strftime('%H:%M:%S')}
-"""
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-def mostrar_estadisticas_detalladas(chat_id):
-    stats = obtener_estadisticas_precision()
-
-    precision = stats['precision_general']
-    barras = "█" * int(precision / 5) + "░" * (20 - int(precision / 5))
-
-    mensaje = f"""📈 *ESTADÍSTICAS DETALLADAS*
-
-🎯 *Precisión General*
-[{barras}] {precision:.1f}%
-
-📊 *Distribución de Aciertos/Fallos*
-✅ Aciertos: {stats['aciertos']} ({'█' * int(stats['aciertos'] / max(stats['verificadas'], 1) * 20) if stats['verificadas'] > 0 else '░░░░░░░░░░░░░░░░░░░░'})
-❌ Fallos: {stats['fallos']} ({'█' * int(stats['fallos'] / max(stats['verificadas'], 1) * 20) if stats['verificadas'] > 0 else '░░░░░░░░░░░░░░░░░░░░'})
-
-📊 *Rendimiento por Tendencia*
-📈 Alcista:  {'▓' * int(stats['precision_alcista'] / 5)}{'░' * (20 - int(stats['precision_alcista'] / 5))} {stats['precision_alcista']:.1f}%
-📉 Bajista:  {'▓' * int(stats['precision_bajista'] / 5)}{'░' * (20 - int(stats['precision_bajista'] / 5))} {stats['precision_bajista']:.1f}%
-➡️ Neutral:  {'▓' * int(stats['precision_neutral'] / 5)}{'░' * (20 - int(stats['precision_neutral'] / 5))} {stats['precision_neutral']:.1f}%
-
-📋 *Resumen:*
-• Total predicciones: {stats['total_predicciones']}
-• Verificadas: {stats['verificadas']}
-• Ratio Acierto/Fallo: {stats['aciertos']}/{stats['fallos']}
-
-{'✅ El bot tiene buena precisión' if stats['precision_general'] > 65 else '📈 El bot está mejorando su precisión' if stats['precision_general'] > 50 else '⚠️ El bot necesita más datos para ser preciso'}
-
-🕐 {datetime.now().strftime('%H:%M:%S')}
-"""
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-# ==================== ALERTAS DE PRECIO ====================
+# ==================== SECCIÓN CORREGIDA: INDEPENDIENTE (UMBRALES FIJOS) ====================
 
 def verificar_alertas(precios):
     global ultimos_precios
-    if not precios:
-        return
-
+    if not precios: return
     usuarios = obtener_usuarios()
-    if not usuarios:
-        return
+    if not usuarios: return
 
-    for usuario in usuarios:
-        for moneda in ['VES', 'COP', 'PEN']:
-            if moneda not in precios or not precios[moneda]:
-                continue
+    for moneda in ['VES', 'COP', 'PEN']:
+        if moneda not in precios or not precios[moneda]: continue
+        precio_actual = precios[moneda]['compra']
 
-            precio_actual = precios[moneda]['compra']
+        if ultimos_precios[moneda] is None:
+            ultimos_precios[moneda] = precio_actual
+            continue
 
-            if ultimos_precios[moneda] is None:
-                ultimos_precios[moneda] = precio_actual
-                continue
+        cambio_absoluto = precio_actual - ultimos_precios[moneda]
+        
+        # Validación de umbral exacto de dinero
+        if abs(cambio_absoluto) >= UMBRALES_FIJOS[moneda]:
+            direccion = "📈 SUBIÓ" if cambio_absoluto > 0 else "📉 BAJÓ"
+            emoji = "🟢" if cambio_absoluto > 0 else "🔴"
+            signo = "+" if cambio_absoluto > 0 else ""
+            cambio_porcentaje = (cambio_absoluto / ultimos_precios[moneda] * 100)
 
-            cambio = abs(precio_actual - ultimos_precios[moneda])
-            umbral = UMBRALES.get(moneda, 0)
+            mensaje = f"""
+{emoji} *🔔 ALERTA DE PRECIO: {moneda}* {emoji}
 
-            if cambio >= umbral:
-                direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
-                emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
-                signo = "+" if precio_actual > ultimos_precios[moneda] else ""
-                cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
-
-                mensaje = f"""
-{emoji} *🔔 ALERTA {moneda}* {emoji}
-
-{direccion} en {signo}{cambio:.2f}
+El precio del mercado ha cambiado un valor neto de: *{signo}{cambio_absoluto:.2f} {moneda}* ({direccion})
 
 📊 *Detalles:*
 • Anterior: {ultimos_precios[moneda]:.2f}
 • Actual: {precio_actual:.2f}
-• Cambio: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)
+• Variación Porcentual: {signo}{cambio_porcentaje:.2f}%
 
 🕐 {datetime.now().strftime('%H:%M:%S')}
 """
-                enviar_mensaje(usuario, mensaje)
-                time.sleep(0.05)
+            for usuario in usuarios:
+                try: enviar_mensaje(usuario, mensaje); time.sleep(0.04)
+                except: pass
 
-                if moneda in ['COP', 'PEN']:
-                    enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} procesada con éxito.*")
+            ultimos_precios[moneda] = precio_actual
+            print(f"🔔 Alerta por Umbral Fijo enviada para {moneda}.")
 
-        for moneda in ['VES', 'COP', 'PEN']:
-            if moneda in precios and precios[moneda]:
-                ultimos_precios[moneda] = precios[moneda]['compra']
-
-# ==================== MOSTRAR PRECIOS ====================
+# ==================== MOSTRAR MENÚS DE PRECIOS ====================
 
 def mostrar_precios_usdt(chat_id):
-    precios = {}
-    for m in ['VES', 'COP', 'PEN']:
-        compra, venta = obtener_precios_con_cache(m)
-        if compra and venta:
-            precios[m] = {'compra': compra, 'venta': venta}
-    if not precios:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal(chat_id))
-        return
-
-    mensaje = f"💰 *PRECIOS USDT P2P*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-    for m, datos in precios.items():
-        mensaje += f"*{m}*\n"
-        mensaje += f"  🟢 COMPRA: {datos['compra']:.2f}\n"
-        mensaje += f"  🔴 VENTA: {datos['venta']:.2f}\n"
-        mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n\n"
-
+    precios = {m: {'compra': c, 'venta': v} for m in ['VES', 'COP', 'PEN'] for c, v in [obtener_precios_con_cache(m)] if c}
+    if not precios: return
+    mensaje = f"💰 *PRECIOS USDT P2P*\n\n"
+    for m, d in precios.items():
+        mensaje += f"*{m}*\n  🟢 COMPRA: {d['compra']:.2f}\n  🔴 VENTA: {d['venta']:.2f}\n  📊 Spread: {d['compra']-d['venta']:.2f}\n\n"
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 def mostrar_precio_individual(chat_id, moneda):
-    compra, venta = obtener_precios_con_cache(moneda)
-    if not compra or not venta:
-        enviar_mensaje(chat_id, f"⏳ Obteniendo precio {moneda}...", crear_teclado_opciones(chat_id))
-        return
+    c, v = obtener_precios_con_cache(moneda)
+    if c:
+        enviar_mensaje(chat_id, f"💰 *PRECIO {moneda}*\n\n🟢 COMPRA: {c:.2f}\n🔴 VENTA: {v:.2f}", crear_teclado_opciones(chat_id))
 
-    mensaje = f"💰 *PRECIO {moneda}*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-    mensaje += f"🟢 COMPRA: {compra:.2f}\n"
-    mensaje += f"🔴 VENTA: {venta:.2f}\n"
-    mensaje += f"📊 Spread: {compra-venta:.2f}\n"
-
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-# ==================== TETHER USDT VS BCV ====================
+def mostrar_tether_vs_bcv(chat_id):
+    compra, _ = obtener_precios_con_cache('VES')
+    tasas = obtener_tasas_bcv()
+    if compra and tasas:
+        bcv_05 = tasas['usd'] * 1.005
+        enviar_mensaje(chat_id, f"🪙 *USDT vs BCV (+0.50%)*\n\n🏦 BCV: {tasas['usd']:.2f}\n📈 BCV+0.50%: {bcv_05:.2f}\n🟢 P2P: {compra:.2f}", crear_teclado_principal(chat_id))
 
 def obtener_tasas_bcv():
     try:
-        url = "https://api.exchangerate-api.com/v4/latest/USD"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            usd = data.get('rates', {}).get('VES', 0)
-            eur = data.get('rates', {}).get('EUR', 0)
-            if usd > 0:
-                return {
-                    'usd': usd,
-                    'eur': usd * eur if eur > 0 else usd * 0.92,
-                    'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-    except:
-        pass
+        r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
+        if r.status_code == 200: return {'usd': r.json().get('rates', {}).get('VES', 0)}
+    except: pass
     return None
-
-def mostrar_tether_vs_bcv(chat_id):
-    compra, venta = obtener_precios_con_cache('VES')
-    if not compra or not venta:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal(chat_id))
-        return
-
-    tasas = obtener_tasas_bcv()
-    if not tasas:
-        enviar_mensaje(chat_id, "⏳ Obteniendo tasas...", crear_teclado_principal(chat_id))
-        return
-
-    bcv_con_porcentaje = tasas['usd'] * 1.005
-
-    diff_compra = compra - bcv_con_porcentaje
-    pct_compra = (diff_compra / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
-
-    mensaje = f"🪙 *TETHER USDT vs BCV (+0.50%)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-    mensaje += f"🏦 *BCV Oficial:* {tasas['usd']:.2f} Bs\n"
-    mensaje += f"📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n"
-    mensaje += f"🟢 *COMPRA USDT VES:* {compra:.2f} Bs\n"
-    mensaje += f"  Diferencia vs BCV+0.50%: {diff_compra:+.2f} Bs\n"
-    mensaje += f"  Porcentaje: {pct_compra:+.1f}%\n"
-
-    enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-# ==================== HISTORIAL VES ====================
 
 def mostrar_historial_ves(chat_id):
     analisis = obtener_analisis_ves()
-    if not analisis:
-        mensaje = "📈 *HISTORIAL DE BRECHA VES*\n⏳ Sin datos suficientes aún\n\nEspera al menos 2 minutos después de iniciar el bot."
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-        return
+    if analisis:
+        enviar_mensaje(chat_id, f"📈 *BRECHA VES*\n\n📊 Actual: {analisis['actual']:.2f}\n📊 Apertura: {analisis['apertura']:.2f}\n🧭 Tendencia: {analisis['tendencia']}", crear_teclado_principal(chat_id))
 
-    mensaje = f"📈 *HISTORIAL DE BRECHA VES (24h)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
-    mensaje += f"📅 {datetime.now().strftime('%d/%m/%Y')}\n\n"
-    mensaje += f"📊 *Apertura:* {analisis['apertura']:.2f} Bs\n"
-    mensaje += f"📊 *Actual:* {analisis['actual']:.2f} Bs\n"
-    emoji = "📈" if analisis['cambio'] > 0 else "📉" if analisis['cambio'] < 0 else "➡️"
-    mensaje += f"{emoji} *Cambio:* {analisis['cambio']:+.2f} Bs ({analisis['cambio_porcentaje']:+.1f}%)\n"
-    mensaje += f"📈 *Máximo:* {analisis['maximo']:.2f} Bs\n"
-    mensaje += f"📉 *Mínimo:* {analisis['minimo']:.2f} Bs\n"
-    mensaje += f"🧭 *Tendencia:* {analisis['tendencia']}\n"
-    mensaje += f"📊 *Muestras:* {analisis['muestras']}\n"
-
-    enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-# ==================== PROCESAR MENSAJES ====================
+# ==================== PROCESAR ENTRADAS TELEGRAM ====================
 
 def procesar_mensaje(chat_id, texto):
-    # FILTRO DINÁMICO POR GRUPO DE TELEGRAM
     if not usuario_esta_en_grupo(chat_id):
-        mensaje_bloqueo = (
-            "❌ *Acceso Denegado*\n\n"
-            "Este bot es privado y exclusivo para miembros de nuestra comunidad.\n\n"
-            "⚠️ Para poder usarlo, debes pertenecer a nuestro grupo oficial. "
-            "Una vez dentro del grupo, vuelve aquí y presiona /start."
-        )
-        enviar_mensaje(chat_id, mensaje_bloqueo)
+        enviar_mensaje(chat_id, "❌ *Acceso Denegado*\nEste bot es exclusivo de nuestra comunidad.")
         return
-
-    print(f"📩 {texto}")
     guardar_usuario(chat_id)
+    if texto == '/start': enviar_mensaje(chat_id, "Bienvenido a TetherPrueba Bot", crear_teclado_principal(chat_id))
+    elif texto == '💰 Precio USDT': mostrar_precios_usdt(chat_id)
+    elif texto == '🪙 Tether USDT vs BCV': mostrar_tether_vs_bcv(chat_id)
+    elif texto == '📈 Historial de brecha VES': mostrar_historial_ves(chat_id)
+    elif texto == '📋 + Opciones': enviar_mensaje(chat_id, "Opciones avanzadas:", crear_teclado_opciones(chat_id))
+    elif texto == '🔙 Volver al menú principal': enviar_mensaje(chat_id, "Menú principal", crear_teclado_principal(chat_id))
+    elif texto == '🇻🇪 Precio VES': mostrar_precio_individual(chat_id, 'VES')
+    elif texto == '🇨🇴 Precio COP': mostrar_precio_individual(chat_id, 'COP')
+    elif texto == '🇵🇪 Precio PEN': mostrar_precio_individual(chat_id, 'PEN')
+    elif texto == '📊 Análisis Mercado': mostrar_analisis_mercado(chat_id)
+    elif texto == '📋 Historial Predicciones': mostrar_historial_predicciones(chat_id)
+    elif texto == '📈 Estadísticas': mostrar_estadisticas_detalladas(chat_id)
 
-    if texto == '/start':
-        mensaje = """
-Bienvenido a TetherPrueba
+def mostrar_analisis_mercado(chat_id):
+    analisis, err = analizar_tendencia_mercado('VES')
+    if analisis:
+        enviar_mensaje(chat_id, f"📊 *ORDER FLOW P2P*\n\nTendencia: {analisis['tendencia']}\nDelta: {analisis['cambio_10min']:+.2f}%", crear_teclado_opciones(chat_id))
 
-Soy tu asistente diseñado para facilitarte la información sobre las tasas del momento de VES, COP y PEN del P2P de Binance.
+def mostrar_historial_predicciones(chat_id):
+    stats = obtener_estadisticas_precision()
+    enviar_mensaje(chat_id, f"📊 *PREDICCIONES*\n\nGeneral: {stats['precision_general']:.1f}%", crear_teclado_opciones(chat_id))
 
-Herramientas disponibles:
-
-💰 Precio USDT → Todas las monedas
-🪙 Tether USDT vs BCV → Comparativa con tasa oficial
-📈 Historial de brecha VES → Últimas 24h
-
-🔔 Alertas automáticas:
-Activo por cambios en las tasas o por anomalías críticas en el Delta de Volumen P2P.
-"""
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-    elif texto == '💰 Precio USDT' or texto == '/precios':
-        mostrar_precios_usdt(chat_id)
-
-    elif texto == '🪙 Tether USDT vs BCV' or texto == '/tether':
-        mostrar_tether_vs_bcv(chat_id)
-
-    elif texto == '📈 Historial de brecha VES' or texto == '/historial':
-        mostrar_historial_ves(chat_id)
-
-    elif texto == '🏦 Tasas de Cambio' or texto == '/tasas':
-        if chat_id == ADMIN_ID:
-            mostrar_tasas_cambio(chat_id)
-        else:
-            enviar_mensaje(chat_id, "❌ Solo el administrador puede usar este comando", crear_teclado_principal(chat_id))
-
-    elif texto == '📋 + Opciones':
-        mensaje = "📋 *+ OPCIONES*\n\nSelecciona una opción:"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-    elif texto == '🔙 Volver al menú principal':
-        mensaje = "🏠 *Volviendo al menú principal*"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-    elif texto == '🇻🇪 Precio VES' or texto == '/ves':
-        mostrar_precio_individual(chat_id, 'VES')
-
-    elif texto == '🇨🇴 Precio COP' or texto == '/cop':
-        mostrar_precio_individual(chat_id, 'COP')
-
-    elif texto == '🇵🇪 Precio PEN' or texto == '/pen':
-        mostrar_precio_individual(chat_id, 'PEN')
-
-    elif texto == '👥 Usuarios Registrados' or texto == '/usuarios':
-        if chat_id == ADMIN_ID:
-            usuarios = obtener_usuarios()
-            if usuarios:
-                mensaje = f"👥 *SISTEMA AUTOMÁTICO ACTIVO*\n\nTotal interactuando: {len(usuarios)}\n\nEl bot verifica accesos en tiempo real mediante Rose."
-                for uid in usuarios:
-                    mensaje += f"\n• `{uid}`"
-            else:
-                mensaje = "📝 No hay usuarios registrados"
-            enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-        else:
-            enviar_mensaje(chat_id, "❌ Solo el administrador puede ver esto", crear_teclado_opciones(chat_id))
-
-    elif texto == '📊 Análisis Mercado' or texto == '/analisis':
-        mostrar_analisis_mercado(chat_id)
-
-    elif texto == '📋 Historial Predicciones' or texto == '/historial_predicciones':
-        mostrar_historial_predicciones(chat_id)
-
-    elif texto == '📈 Estadísticas' or texto == '/estadisticas':
-        mostrar_estadisticas_detalladas(chat_id)
-
-    else:
-        enviar_mensaje(chat_id, "Usa /start", crear_teclado_principal(chat_id))
+def mostrar_estadisticas_detalladas(chat_id):
+    stats = obtener_estadisticas_precision()
+    enviar_mensaje(chat_id, f"📈 *MÉTRICAS*\n\nAciertos: {stats['aciertos']} | Fallos: {stats['fallos']}", crear_teclado_opciones(chat_id))
 
 # ==================== POLLING ====================
 
 def recibir_mensajes():
     global ultimo_update_id
-    print("🔄 Polling iniciado...")
     while True:
         try:
-            url = URL_TELEGRAM + "getUpdates"
-            params = {'offset': ultimo_update_id + 1, 'timeout': 30}
-            response = requests.get(url, params=params, timeout=35)
-
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ok'):
-                    for update in data.get('result', []):
-                        ultimo_update_id = update.get('update_id', 0)
-                        message = update.get('message')
-                        if message:
-                            chat_id = message.get('chat', {}).get('id')
-                            texto = message.get('text', '')
-                            if chat_id and texto:
-                                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
-
+            r = requests.get(URL_TELEGRAM + "getUpdates", params={'offset': ultimo_update_id + 1, 'timeout': 30}, timeout=35)
+            if r.status_code == 200 and r.json().get('ok'):
+                for u in r.json().get('result', []):
+                    ultimo_update_id = u.get('update_id', 0)
+                    msg = u.get('message')
+                    if msg and msg.get('chat', {}).get('id') and msg.get('text', ''):
+                        threading.Thread(target=procesar_mensaje, args=(msg['chat']['id'], msg['text'])).start()
             time.sleep(1)
+        except: time.sleep(5)
 
-        except Exception as e:
-            print(f"❌ Error polling: {e}")
-            time.sleep(5)
-
-# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN ====================
+# ==================== SECCIÓN CORREGIDA: INDEPENDIENTE (FILTRO DELTA 5%) ====================
 
 def actualizar_precios():
-    global ultima_alerta_enviada, ultimo_registro_prediccion, cache_precios, cache_tiempo
-    
+    global cache_precios, cache_tiempo, ultima_alerta_enviada, ultimo_delta_notificado
     while True:
         try:
-            print(f"\n🔄 Actualizando... {datetime.now().strftime('%H:%M:%S')}")
-
             precios = {}
             for moneda in ['VES', 'COP', 'PEN']:
                 compra, venta = obtener_precios_p2p_reales(moneda)
@@ -937,151 +483,75 @@ def actualizar_precios():
                     precios[moneda] = {'compra': compra, 'venta': venta}
                     cache_precios[moneda] = {'compra': compra, 'venta': venta}
                     cache_tiempo[moneda] = time.time()
-                    if moneda == 'VES':
-                        guardar_historial_ves(compra)
+                    if moneda == 'VES': guardar_historial_ves(compra)
 
             if precios:
+                # Alertas por Umbrales fijos (1 VES, 100 COP, 0.10 PEN)
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
 
-                # Ejecutar análisis cuantitativo automático para registrar predicción
+                # Alertas Cuantitativas de Volumen con filtro estricto del 5%
                 analisis, err = analizar_tendencia_mercado('VES')
                 if analisis and not err:
-                    ahora = datetime.now()
+                    delta_actual = analisis['cambio_10min']
+                    guardar_prediccion(analisis)
 
-                    # Historial controlado por variación de precio del 10%
-                    precio_actual = analisis['precio_actual']
-                    debe_guardar = False
-
-                    if estadisticas_predicciones['ultima_prediccion'] is None:
-                        debe_guardar = True
-                    else:
-                        precio_anterior = estadisticas_predicciones['ultima_prediccion']['precio_actual']
-                        if precio_anterior > 0:
-                            variacion_porcentaje = abs((precio_actual - precio_anterior) / precio_anterior) * 100
-                            if variacion_porcentaje >= 10.0:  # <--- Configuración del 10% solicitada
-                                debe_guardar = True
-
-                    if debe_guardar:
-                        guardar_prediccion(analisis)
-                        ultimo_registro_prediccion = ahora
-                        print(f"🔮 Nueva predicción registrada por variación del 10% (Precio: {precio_actual:.2f}).")
-                    
-                    verificar_predicciones()
-
-                    # Bloqueo estricto contra spam repetido en notificaciones
-                    if analisis['puntaje'] == 7 or analisis['puntaje'] == -7:
-                        if ultima_alerta_enviada is None or (ahora - ultima_alerta_enviada).total_seconds() >= 900:
-                            msg_alerta = f"🚨 *ALERTA DE VOLUMEN P2P CRÍTICA* 🚨\n\n"
-                            msg_alerta += f"🧭 *Dirección Proyectada:* {analisis['tendencia']}\n"
-                            msg_alerta += f"📊 *Desequilibrio de Órdenes:* {analisis['cambio_10min']:+.1f}%\n"
-                            msg_alerta += f"💡 *Acción:* {analisis['prediccion']}\n"
-                            msg_alerta += f"🕐 {datetime.now().strftime('%H:%M:%S')}"
-
-                            # Mandar alerta a los usuarios autorizados
-                            for usr in obtener_usuarios():
-                                try:
-                                    enviar_mensaje(usr, msg_alerta)
-                                    time.sleep(0.04)
-                                except:
-                                    pass
-                            
-                            # Actualizamos de forma global la estampa de tiempo
-                            ultima_alerta_enviada = ahora
-                            print("🔔 Alerta push enviada con éxito. Entrando en Cooldown de 15 min.")
+                    if analisis['puntaje'] in [7, -7]:
+                        debe_notificar = False
+                        if ultimo_delta_notificado is None:
+                            debe_notificar = True
                         else:
-                            print("⏳ Alerta crítica de volumen omitida por filtro Cooldown.")
+                            # FILTRO DEL 5% EN LA VARIACIÓN DEL DELTA DE VOLUMEN
+                            if abs(delta_actual - ultimo_delta_notificado) >= 5.0:
+                                debe_notificar = True
 
-                print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
-                print(f"  📊 Historial VES: {len(historial_ves)} muestras")
-            else:
-                print("  ❌ No se obtuvieron precios")
+                        if debe_notificar:
+                            msg_alerta = f"🚨 *ALERTA DE ANÁLISIS DE MERCADO (Order Flow)* 🚨\n\n" \
+                                         f"🧭 *Dirección Proyectada:* {analisis['tendencia']}\n" \
+                                         f"📊 *Fuerza del Delta (Volumen):* {delta_actual:+.1f}%\n" \
+                                         f"💡 *Predicción:* {analisis['prediccion']}\n" \
+                                         f"💵 *Precio Ref:* {analisis['precio_actual']:.2f} Bs\n" \
+                                         f"🕐 {datetime.now().strftime('%H:%M:%S')}"
 
+                            for usr in obtener_usuarios():
+                                try: enviar_mensaje(usr, msg_alerta); time.sleep(0.04)
+                                except: pass
+                            
+                            ultima_alerta_enviada = datetime.now()
+                            ultimo_delta_notificado = delta_actual
+                            print(f"📢 Alerta de volumen enviada. Delta actual: {delta_actual:.2f}%")
+                    verificar_predicciones()
             time.sleep(60)
-
         except Exception as e:
-            print(f"  ❌ Error en bucle principal: {e}")
-            time.sleep(60)
-
-# ==================== MANTENER ACTIVO ====================
+            print(f"❌ Error bucle: {e}"); time.sleep(60)
 
 def mantener_activo():
     while True:
-        try:
-            url = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'localhost')}/"
-            requests.get(url, timeout=10)
-            print(f"💓 Keep alive: {datetime.now().strftime('%H:%M:%S')}")
-        except:
-            pass
+        try: requests.get(f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'localhost')}/", timeout=10)
+        except: pass
         time.sleep(300)
-
-# ==================== FLASK ====================
 
 @app.route('/')
 def home():
-    return f"✅ Bot activo 24/7\n🔒 Canal/Grupo Vinculado: {GRUPO_AUTORIZADO_ID}\n📊 {len(historial_ves)} muestras VES\n📊 {len(historial_predicciones)} predicciones\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
+    return f"✅ Bot activo\n📊 {len(historial_ves)} muestras VES\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
 
-# ==================== FUNCIÓN AGREGADA PARA REACTIVAR ANÁLISIS DE MERCADO ====================
-
-def mostrar_analisis_mercado(chat_id):
-    analisis, err = analizar_tendencia_mercado('VES')
-    
-    if err:
-        enviar_mensaje(chat_id, err, crear_teclado_opciones(chat_id))
-        return
-
-    mensaje = f"""📊 *ANÁLISIS CUANTITATIVO (ORDER FLOW P2P)*
-
-{analisis['emoji']} Tendencia: {analisis['tendencia']}
-🕐 {datetime.now().strftime('%H:%M:%S')}
-📈 Precio Referencia: {analisis['precio_actual']:.2f} Bs
-
-📊 *Métricas de Flujo:*
-• Fuerza del Delta: {analisis['cambio_10min']:+.2f}%
-• Presión Neta (Order Flow): {analisis['momentum']:+.3f}M
-
-🔮 *Predicción de Volumen:* {analisis['prediccion']}
-🎯 *Confianza Matemática:* {analisis['confianza']}
-
-💡 *Recomendación:* {analisis['recomendacion']}
-
-🔄 Análisis basado en profundidad de órdenes reales del P2P actual."""
-
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-# ==================== MAIN ====================
+# ==================== PRODUCCIÓN GITHUB / RAILWAY ====================
 
 if __name__ == "__main__":
-    print("🚀 Bot iniciando en Railway...")
-    print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
-    print(f"✅ ADMIN_ID: {ADMIN_ID if ADMIN_ID else 'FALTANTE'}")
-    print(f"🔒 ID GRUPO VINCULADO: {GRUPO_AUTORIZADO_ID}")
-    print(f"🕐 Zona horaria: Caracas (UTC -4)")
-
     cargar_tasas_anteriores()
-
-    print("\n📊 Probando conexión a Binance...")
+    
+    # Inicialización del entorno
     for m in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_p2p_reales(m)
-        if compra and venta:
-            print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
+        if compra:
             ultimos_precios[m] = compra
             cache_precios[m] = {'compra': compra, 'venta': venta}
             cache_tiempo[m] = time.time()
-            if m == 'VES':
-                guardar_historial_ves(compra)
-        else:
-            print(f"  ❌ {m}: No disponible")
-
-    print(f"\n📊 Historial VES inicial: {len(historial_ves)} muestras")
-    print(f"📊 Sistema de predicciones cuantitativas inicializado")
 
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()
     threading.Thread(target=mantener_activo, daemon=True).start()
 
-    print("\n✅ Bot listo!")
-    print("=" * 40)
-
+    # Configuración del puerto dinámico para despliegues en la nube (Railway/Heroku)
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

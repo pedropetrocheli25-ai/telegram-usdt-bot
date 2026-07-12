@@ -949,7 +949,7 @@ def actualizar_precios():
                 if analisis and not err:
                     ahora = datetime.now()
 
-                    #Historial controlado por variación de precio del 10%#
+                    # Historial controlado por variación de precio del 10%
                     precio_actual = analisis['precio_actual']
                     debe_guardar = False
 
@@ -959,14 +959,13 @@ def actualizar_precios():
                         precio_anterior = estadisticas_predicciones['ultima_prediccion']['precio_actual']
                         if precio_anterior > 0:
                             variacion_porcentaje = abs((precio_actual - precio_anterior) / precio_anterior) * 100
-                            if variacion_porcentaje >= 10.0:  # <--- Aquí configuras el 10%
+                            if variacion_porcentaje >= 10.0:  # <--- Configuración del 10% solicitada
                                 debe_guardar = True
 
                     if debe_guardar:
                         guardar_prediccion(analisis)
                         ultimo_registro_prediccion = ahora
                         print(f"🔮 Nueva predicción registrada por variación del 10% (Precio: {precio_actual:.2f}).")
-
                     
                     verificar_predicciones()
 
@@ -1021,6 +1020,34 @@ def mantener_activo():
 @app.route('/')
 def home():
     return f"✅ Bot activo 24/7\n🔒 Canal/Grupo Vinculado: {GRUPO_AUTORIZADO_ID}\n📊 {len(historial_ves)} muestras VES\n📊 {len(historial_predicciones)} predicciones\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
+
+# ==================== FUNCIÓN AGREGADA PARA REACTIVAR ANÁLISIS DE MERCADO ====================
+
+def mostrar_analisis_mercado(chat_id):
+    analisis, err = analizar_tendencia_mercado('VES')
+    
+    if err:
+        enviar_mensaje(chat_id, err, crear_teclado_opciones(chat_id))
+        return
+
+    mensaje = f"""📊 *ANÁLISIS CUANTITATIVO (ORDER FLOW P2P)*
+
+{analisis['emoji']} Tendencia: {analisis['tendencia']}
+🕐 {datetime.now().strftime('%H:%M:%S')}
+📈 Precio Referencia: {analisis['precio_actual']:.2f} Bs
+
+📊 *Métricas de Flujo:*
+• Fuerza del Delta: {analisis['cambio_10min']:+.2f}%
+• Presión Neta (Order Flow): {analisis['momentum']:+.3f}M
+
+🔮 *Predicción de Volumen:* {analisis['prediccion']}
+🎯 *Confianza Matemática:* {analisis['confianza']}
+
+💡 *Recomendación:* {analisis['recomendacion']}
+
+🔄 Análisis basado en profundidad de órdenes reales del P2P actual."""
+
+    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
 # ==================== MAIN ====================
 

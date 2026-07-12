@@ -1,4 +1,4 @@
-Import requests
+import requests
 import time
 import os
 import threading
@@ -71,6 +71,7 @@ def guardar_usuario(chat_id):
 cache_precios = {}
 cache_tiempo = {}
 CACHE_DURACION = 30
+
 # ==================== HISTORIAL (SOLO VES) ====================
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None

@@ -1,4 +1,4 @@
-import requests
+Import requests
 import time
 import os
 import threading
@@ -78,8 +78,6 @@ precio_apertura_ves = None
 # ==================== CONTROL DE SPAM Y ALERTAS CRÍTICAS ====================
 ultima_alerta_enviada = None         # Cooldown para notificaciones repetidas en Telegram
 ultimo_registro_prediccion = None    # Cooldown para limitar muestras idénticas en el historial
-ultimo_porcentaje_alertado = 0.0     
-ultima_tendencia_alertada = ""       
 
 # ==================== HISTORIAL DE PREDICCIONES ====================
 historial_predicciones = deque(maxlen=100)
@@ -882,11 +880,7 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
             enviar_mensaje(chat_id, "❌ Solo el administrador puede ver esto", crear_teclado_opciones(chat_id))
 
     elif texto == '📊 Análisis Mercado' or texto == '/analisis':
-        # En tu código original faltaba definir la acción de este botón, se asume mostrar_analisis_mercado(chat_id)
-        try:
-            mostrar_analisis_mercado(chat_id)
-        except:
-            pass
+        mostrar_analisis_mercado(chat_id)
 
     elif texto == '📋 Historial Predicciones' or texto == '/historial_predicciones':
         mostrar_historial_predicciones(chat_id)
@@ -930,7 +924,6 @@ def recibir_mensajes():
 
 def actualizar_precios():
     global ultima_alerta_enviada, ultimo_registro_prediccion, cache_precios, cache_tiempo
-    global ultimo_porcentaje_alertado, ultima_tendencia_alertada
     
     while True:
         try:
@@ -963,12 +956,9 @@ def actualizar_precios():
                     
                     verificar_predicciones()
 
-                    # Modificación del umbral de alerta ajustado estrictamente al 10.0%
+                    # Bloqueo estricto contra spam repetido en notificaciones
                     if analisis['puntaje'] == 7 or analisis['puntaje'] == -7:
-                        diferencia_porcentaje = abs(analisis['cambio_10min'] - ultimo_porcentaje_alertado)
-                        cambio_de_tendencia = (analisis['tendencia'] != ultima_tendencia_alertada)
-
-                        if cambio_de_tendencia or diferencia_porcentaje >= 10.0:
+                        if ultima_alerta_enviada is None or (ahora - ultima_alerta_enviada).total_seconds() >= 900:
                             msg_alerta = f"🚨 *ALERTA DE VOLUMEN P2P CRÍTICA* 🚨\n\n"
                             msg_alerta += f"🧭 *Dirección Proyectada:* {analisis['tendencia']}\n"
                             msg_alerta += f"📊 *Desequilibrio de Órdenes:* {analisis['cambio_10min']:+.1f}%\n"
@@ -983,13 +973,11 @@ def actualizar_precios():
                                 except:
                                     pass
                             
-                            # Guardamos en la memoria para el cálculo del próximo ciclo de 1 minuto
+                            # Actualizamos de forma global la estampa de tiempo
                             ultima_alerta_enviada = ahora
-                            ultimo_porcentaje_alertado = analisis['cambio_10min']
-                            ultima_tendencia_alertada = analisis['tendencia']
-                            print("🔔 Alerta push enviada con éxito por variación del 10%.")
+                            print("🔔 Alerta push enviada con éxito. Entrando en Cooldown de 15 min.")
                         else:
-                            print("⏳ Alerta crítica omitida: El cambio es menor al 10.0%.")
+                            print("⏳ Alerta crítica de volumen omitida por filtro Cooldown.")
 
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
                 print(f"  📊 Historial VES: {len(historial_ves)} muestras")

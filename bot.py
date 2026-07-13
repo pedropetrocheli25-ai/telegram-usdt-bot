@@ -957,7 +957,7 @@ def actualizar_precios():
                 if analisis and not err:
                     ahora = datetime.now()
 
-                    # Historial controlado por variación de precio del 10%
+                    # Historial controlado por variación de precio del 2%
                     precio_actual = analisis['precio_actual']
                     debe_guardar = False
 
@@ -967,13 +967,13 @@ def actualizar_precios():
                         precio_anterior = estadisticas_predicciones['ultima_prediccion']['precio_actual']
                         if precio_anterior > 0:
                             variacion_porcentaje = abs((precio_actual - precio_anterior) / precio_anterior) * 100
-                            if variacion_porcentaje >= 10.0:
+                            if variacion_porcentaje >= 2.0:
                                 debe_guardar = True
 
                     if debe_guardar:
                         guardar_prediccion(analisis)
                         ultimo_registro_prediccion = ahora
-                        print(f"🔮 Nueva predicción registrada por variación del 10% (Precio: {precio_actual:.2f}).")
+                        print(f"🔮 Nueva predicción registrada por variación del 2% (Precio: {precio_actual:.2f}).")
                     
                     verificar_predicciones()
 

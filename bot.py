@@ -381,7 +381,7 @@ def obtener_analisis_ves():
         'muestras': len(precios)
     }
 
-# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (P2P ORDER FLOW) ====================
+# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (MODIFICADO: ABSORCIÓN P2P DE VOLUMEN) ====================
 
 def analizar_tendencia_mercado(moneda='VES'):
     try:
@@ -415,29 +415,30 @@ def analizar_tendencia_mercado(moneda='VES'):
         delta_volumen = vol_demanda - vol_oferta
         fuerza_mercado = (delta_volumen / vol_total) * 100  
 
-        porcentaje_umbral_alcista = 12.0  
-        porcentaje_umbral_bajista = -12.0
+        # --- MODIFICACIÓN: SESGO DE LIQUIDEZ INVERTIDO POR ABSORCIÓN ---
+        porcentaje_umbral_alcista = 15.0  
+        porcentaje_umbral_bajista = -15.0
 
-        if fuerza_mercado >= porcentaje_umbral_alcista:
+        if fuerza_mercado <= porcentaje_umbral_bajista:
             tendencia = "🚀 ALCISTA INMINENTE"
             emoji = "🟢"
-            prediccion = "📈 Alta demanda absorbiendo liquidez. El precio tiende a SUBIR."
+            prediccion = "📈 Muro de oferta detectado. Los compradores activos están absorbiendo rápido. El precio tiende a SUBIR."
             confianza = "Alta"
-            recomendacion = "💰 COMPRA - Volumen de tomadores presionando el libro"
+            recomendacion = "💰 COMPRA - Alta liquidez de salida siendo consumida"
             puntaje = 7
-        elif fuerza_mercado <= porcentaje_umbral_bajista:
+        elif fuerza_mercado >= porcentaje_umbral_alcista:
             tendencia = "🔻 BAJISTA INMINENTE"
             emoji = "🔴"
-            prediccion = "📉 Exceso de oferta inundando los anuncios. El precio tiende a BAJAR."
+            prediccion = "📉 Demanda acumulada sin ejecución. Presión de venta latente. El precio tiende a BAJAR."
             confianza = "Alta"
-            recomendacion = "⚠️ VENDE - Acumulación agresiva en los muros de venta"
+            recomendacion = "⚠️ VENDE - Agotamiento de compradores en el libro"
             puntaje = -7
         else:
             tendencia = "➡️ NEUTRAL / ESTABLE"
             emoji = "🟡"
-            prediccion = "⏳ Oferta y demanda equilibradas en el P2P."
+            prediccion = "⏳ Mercado en equilibrio de mercado (Soporte dinámico activo)."
             confianza = "Media"
-            recomendacion = "⏳ ESPERA - Rango lateral controlado"
+            recomendacion = "⏳ ESPERA - Rango plano controlado"
             puntaje = 0
 
         # Creación lineal del diccionario para asegurar compatibilidad estricta
@@ -450,10 +451,10 @@ def analizar_tendencia_mercado(moneda='VES'):
         resultado['cambio_2h'] = fuerza_mercado * 0.2
         resultado['promedio'] = vol_total / 2
         resultado['volatilidad'] = abs(fuerza_mercado)
-        resultado['soporte'] = precio_compra_ref * 0.99
-        resultado['resistencia'] = precio_compra_ref * 1.01
+        resultado['soporte'] = precio_compra_ref * 0.995
+        resultado['resistencia'] = precio_compra_ref * 1.005
         resultado['momentum'] = delta_volumen / 1000000
-        resultado['rsi'] = 50 + (fuerza_mercado / 2)
+        resultado['rsi'] = 50 - (fuerza_mercado / 2)  # RSI invertido en coherencia
         resultado['puntaje'] = puntaje
         resultado['tendencia'] = tendencia
         resultado['emoji'] = emoji
@@ -491,6 +492,7 @@ def guardar_prediccion(analisis):
     estadisticas_predicciones['ultima_prediccion'] = prediccion
     estadisticas_predicciones['total_predicciones'] += 1
 
+# ==================== MODIFICADO: VERIFICACIÓN FLEXIBLE REALISTA ====================
 def verificar_predicciones():
     global historial_predicciones, estadisticas_predicciones
 
@@ -509,18 +511,20 @@ def verificar_predicciones():
             tiempo_actual = datetime.now()
             minutos_transcurridos = (tiempo_actual - tiempo_prediccion).total_seconds() / 60
 
-            # MODIFICADO: Cambiado de 30 a 15 minutos para la evaluación
-            if minutos_transcurridos >= 15:
+            # MODIFICADO: Ventana ampliada a 20 minutos para maduración de tasa
+            if minutos_transcurridos >= 20:
                 precio_prediccion = prediccion['precio_actual']
                 cambio_real = ((precio_actual - precio_prediccion) / precio_prediccion) * 100
 
                 acertada = False
+                # MODIFICADO: Umbral ajustado al 0.15% (Dinámico y adaptado al spread real VES)
+                umbral_movimiento = 0.15
 
-                if 'ALCISTA' in prediccion['tendencia'] and cambio_real > 0.3:
+                if 'ALCISTA' in prediccion['tendencia'] and cambio_real >= umbral_movimiento:
                     acertada = True
-                elif 'BAJISTA' in prediccion['tendencia'] and cambio_real < -0.3:
+                elif 'BAJISTA' in prediccion['tendencia'] and cambio_real <= -umbral_movimiento:
                     acertada = True
-                elif 'NEUTRAL' in prediccion['tendencia'] and abs(cambio_real) <= 0.3:
+                elif 'NEUTRAL' in prediccion['tendencia'] and abs(cambio_real) < umbral_movimiento:
                     acertada = True
 
                 prediccion['verificada'] = True

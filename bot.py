@@ -45,25 +45,8 @@ ultimo_delta_notificado = None  # Guarda la fuerza del delta de la última alert
 GRUPO_AUTORIZADO_ID = -5370892602  
 
 def usuario_esta_en_grupo(user_id):
-    """Verifica en tiempo real si el usuario pertenece al grupo o canal de Telegram"""
-    if user_id == ADMIN_ID:
-        return True
-    
-    try:
-        url = URL_TELEGRAM + "getChatMember"
-        params = {"chat_id": GRUPO_AUTORIZADO_ID, "user_id": user_id}
-        response = requests.get(url, params=params, timeout=8)
-        
-        if response.status_code == 200:
-            resultado = response.json()
-            if resultado.get("ok"):
-                status = resultado["result"].get("status")
-                if status in ["creator", "administrator", "member"]:
-                    return True
-        return False
-    except Exception as e:
-        print(f"⚠️ Error al verificar miembro en Telegram: {e}")
-        return True
+    """Acceso temporalmente abierto para todos los usuarios (Evita Acceso Denegado)"""
+    return True
 
 # Mantener compatibilidad con funciones previas de mensajería masiva
 usuarios_activos = set([ADMIN_ID])
@@ -381,7 +364,7 @@ def obtener_analisis_ves():
         'muestras': len(precios)
     }
 
-# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (MODIFICADO: ABSORCIÓN P2P DE VOLUMEN) ====================
+# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN ====================
 
 def analizar_tendencia_mercado(moneda='VES'):
     try:
@@ -415,7 +398,6 @@ def analizar_tendencia_mercado(moneda='VES'):
         delta_volumen = vol_demanda - vol_oferta
         fuerza_mercado = (delta_volumen / vol_total) * 100  
 
-        # --- MODIFICACIÓN: SESGO DE LIQUIDEZ INVERTIDO POR ABSORCIÓN ---
         porcentaje_umbral_alcista = 15.0  
         porcentaje_umbral_bajista = -15.0
 
@@ -454,7 +436,7 @@ def analizar_tendencia_mercado(moneda='VES'):
         resultado['soporte'] = precio_compra_ref * 0.995
         resultado['resistencia'] = precio_compra_ref * 1.005
         resultado['momentum'] = delta_volumen / 1000000
-        resultado['rsi'] = 50 - (fuerza_mercado / 2)  # RSI invertido en coherencia
+        resultado['rsi'] = 50 - (fuerza_mercado / 2)
         resultado['puntaje'] = puntaje
         resultado['tendencia'] = tendencia
         resultado['emoji'] = emoji
@@ -492,7 +474,6 @@ def guardar_prediccion(analisis):
     estadisticas_predicciones['ultima_prediccion'] = prediccion
     estadisticas_predicciones['total_predicciones'] += 1
 
-# ==================== MODIFICADO: VERIFICACIÓN FLEXIBLE REALISTA ====================
 def verificar_predicciones():
     global historial_predicciones, estadisticas_predicciones
 
@@ -511,13 +492,11 @@ def verificar_predicciones():
             tiempo_actual = datetime.now()
             minutos_transcurridos = (tiempo_actual - tiempo_prediccion).total_seconds() / 60
 
-            # MODIFICADO: Ventana ampliada a 20 minutos para maduración de tasa
             if minutos_transcurridos >= 20:
                 precio_prediccion = prediccion['precio_actual']
                 cambio_real = ((precio_actual - precio_prediccion) / precio_prediccion) * 100
 
                 acertada = False
-                # MODIFICADO: Umbral ajustado al 0.15% (Dinámico y adaptado al spread real VES)
                 umbral_movimiento = 0.15
 
                 if 'ALCISTA' in prediccion['tendencia'] and cambio_real >= umbral_movimiento:
@@ -658,7 +637,7 @@ def mostrar_estadisticas_detalladas(chat_id):
 """
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-# ==================== ALERTAS DE PRECIO (NOTIFICACIÓN 1: AJUSTADA) ====================
+# ==================== ALERTAS DE PRECIO ====================
 
 def verificar_alertas(precios):
     global ultimos_precios
@@ -683,7 +662,6 @@ def verificar_alertas(precios):
             cambio = abs(precio_actual - ultimos_precios[moneda])
             umbral = UMBRALES.get(moneda, 0)
 
-            # Activación exacta por dinero real solicitado
             if cambio >= umbral:
                 direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
                 emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
@@ -816,7 +794,6 @@ def mostrar_historial_ves(chat_id):
 # ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
-    # FILTRO DINÁMICO POR GRUPO DE TELEGRAM
     if not usuario_esta_en_grupo(chat_id):
         mensaje_bloqueo = (
             "❌ *Acceso Denegado*\n\n"
@@ -933,10 +910,10 @@ def recibir_mensajes():
             print(f"❌ Error polling: {e}")
             time.sleep(5)
 
-# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN (NOTIFICACIÓN 2: REDISEÑADA) ====================
+# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN ====================
 
 def actualizar_precios():
-    global ultima_alerta_enviada, ultimo_registro_prediccion, cache_precios, cache_tiempo, ultimo_delta_notificado
+    global mantener_activo, ultimo_registro_prediccion, cache_precios, cache_tiempo, ultimo_delta_notificado
     
     while True:
         try:
@@ -956,12 +933,10 @@ def actualizar_precios():
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
 
-                # Ejecutar análisis cuantitativo automático para registrar predicción
                 analisis, err = analizar_tendencia_mercado('VES')
                 if analisis and not err:
                     ahora = datetime.now()
 
-                    # Historial controlado por variación de precio del 2%
                     precio_actual = analisis['precio_actual']
                     debe_guardar = False
 
@@ -981,9 +956,6 @@ def actualizar_precios():
                     
                     verificar_predicciones()
 
-                    # ---------------------------------------------------------------------------------
-                    # NOTIFICACIÓN 2: LÓGICA POR MOVIMIENTO MATEMÁTICO DIRECTO DEL 2% (SIN COOLDOWN)
-                    # ---------------------------------------------------------------------------------
                     if analisis['puntaje'] in [7, -7]:
                         delta_actual = analisis['cambio_10min']
                         debe_notificar = False
@@ -991,7 +963,6 @@ def actualizar_precios():
                         if ultimo_delta_notificado is None:
                             debe_notificar = True
                         else:
-                            # MODIFICADO: Evalúa si se movió un 2% o más (Cambiado de 5.0 a 2.0)
                             if abs(delta_actual - ultimo_delta_notificado) >= 2.0:
                                 debe_notificar = True
 
@@ -1002,7 +973,6 @@ def actualizar_precios():
                                          f"💡 *Acción:* {analisis['prediccion']}\n" \
                                          f"🕐 {datetime.now().strftime('%H:%M:%S')}"
 
-                            # Mandar alerta push a los usuarios autorizados
                             for usr in obtener_usuarios():
                                 try:
                                     enviar_mensaje(usr, msg_alerta)
@@ -1010,7 +980,6 @@ def actualizar_precios():
                                 except:
                                     pass
                             
-                            # Actualizamos la marca de referencia del Delta y dejamos libre el paso continuo
                             ultimo_delta_notificado = delta_actual
                             print(f"🔔 Alerta por movimiento >= 2% enviada. Delta base fijado en: {delta_actual:.2f}%")
                         else:

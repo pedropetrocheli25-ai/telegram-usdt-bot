@@ -946,7 +946,7 @@ def actualizar_precios():
                         precio_anterior = estadisticas_predicciones['ultima_prediccion']['precio_actual']
                         if precio_anterior > 0:
                             variacion_porcentaje = abs((precio_actual - precio_anterior) / precio_anterior) * 100
-                            if variacion_porcentaje >= 2.0:
+                            if variacion_porcentaje >= 0.5:
                                 debe_guardar = True
 
                     if debe_guardar:

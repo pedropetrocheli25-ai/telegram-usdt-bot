@@ -790,9 +790,9 @@ def mostrar_tether_vs_bcv(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== CALCULO ¿CUÁNTO GANÉ? ====================
+# ==================== CALCULO ¿CUÁNTO GANÉ? (MODIFICADO - INTERACTIVO) ====================
 
-def calcular_ganancia_neta(chat_id):
+def calcular_ganancia_neta(chat_id, monto=100.0):
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
 
@@ -801,38 +801,39 @@ def calcular_ganancia_neta(chat_id):
         return
 
     bcv_mas_medio = tasas['usd'] * 1.005
-    costo_bcv_100usd = bcv_mas_medio * 100.00
+    costo_bcv_monto = bcv_mas_medio * monto
 
-    usdt_neto_tarjeta = 100.00 * (1 - 0.015)  # 98.50 USDT
-    usdt_final = usdt_neto_tarjeta * (1 - 0.041)  # 94.4615 USDT
+    usdt_neto_tarjeta = monto * (1 - 0.015)  # Resta el 1.5% de la tarjeta
+    usdt_final = usdt_neto_tarjeta * (1 - 0.041)  # Resta el 4.1% de Bpay
 
     retorno_ves = usdt_final * venta_ves
 
-    ganancia_neta_ves = retorno_ves - costo_bcv_100usd
-    ganancia_porcentaje = (ganancia_neta_ves / costo_bcv_100usd) * 100
+    ganancia_neta_ves = retorno_ves - costo_bcv_monto
+    ganancia_porcentaje = (ganancia_neta_ves / costo_bcv_monto) * 100 if costo_bcv_monto > 0 else 0
 
     emoji_resultado = "💵" if ganancia_neta_ves >= 0 else "⚠️"
+    
     mensaje = f"""{emoji_resultado} *CALCULADORA DE RETORNO NETO*
 
-Análisis financiero detallado basado en un capital de *$100 USD*:
+Análisis financiero detallado basado en un capital de *${monto:,.2f} USD*:
 
 *1. Costo de Intervención (Egreso):*
 • BCV Oficial: {tasas['usd']:.2f} Bs
 • BCV + 0.50%: {bcv_mas_medio:.2f} Bs
-• Total Invertido (100$): {costo_bcv_100usd:.2f} Bs
+• Total Invertido ({monto:.2f}$): *{costo_bcv_monto:,.2f} Bs*
 
 *2. Liquidación y Comisiones:*
-• Capital base: 100.00 USDT
-• Tarjeta (-1.5%): {usdt_neto_tarjeta:.2f} USDT
-• Bpay (-4.1%): {usdt_final:.4f} USDT (Monto a liquidar)
+• Capital base: {monto:.2f} USDT
+• Tarjeta (-1.5%): {usdt_neto_tarjeta:,.2f} USDT
+• Bpay (-4.1%): {usdt_final:,.4f} USDT (Monto a liquidar)
 
 *3. Retorno en P2P (Venta VES):*
 • Tasa de Venta: {venta_ves:.2f} Bs
-• Total Retornado: {retorno_ves:.2f} Bs
+• Total Retornado: *{retorno_ves:,.2f} Bs*
 
 ━━━━━━━━━━━━━━━━━━━━
 📊 *GANANCIA NETA TOTAL:*
-• Retorno Neto: *{ganancia_neta_ves:+.2f} Bs* ({ganancia_porcentaje:+.2f}%)
+• Retorno Neto: *{ganancia_neta_ves:+,.2f} Bs* ({ganancia_porcentaje:+.2f}%)
 ━━━━━━━━━━━━━━━━━━━━
 
 🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
@@ -862,7 +863,7 @@ def mostrar_historial_ves(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== PROCESAR MENSAJES ====================
+# ==================== PROCESAR MENSAJES (MODIFICADO - RECONOCIMIENTO DE MONTOS) ====================
 
 def procesar_mensaje(chat_id, texto):
     if not usuario_esta_en_grupo(chat_id):
@@ -943,8 +944,10 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
     elif texto == '📊 Análisis Mercado' or texto == '/analisis':
         mostrar_analisis_mercado(chat_id)
 
+    # ACCIÓN DEL BOTÓN: Explica cómo usar el calculador interactivo
     elif texto == '💰 ¿Cuánto Gané?' or texto == '/cuantogane':
-        calcular_ganancia_neta(chat_id)
+        mensaje = "✍️ *Calculadora Inteligente*\n\nPor favor, escribe directamente en el chat el monto en *USD* que deseas calcular (ejemplo: `50` o `150.50`) y te daré el desglose de tu ganancia al instante."
+        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
     elif texto == '📋 Historial Predicciones' or texto == '/historial_predicciones':
         mostrar_historial_predicciones(chat_id)
@@ -953,7 +956,18 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
         mostrar_estadisticas_detalladas(chat_id)
 
     else:
-        enviar_mensaje(chat_id, "Usa /start", crear_teclado_principal(chat_id))
+        # DETECTOR DE NÚMEROS: Intenta convertir lo que escribe el usuario en un número
+        try:
+            monto_limpio = texto.replace(',', '.')
+            monto_usuario = float(monto_limpio)
+            
+            if monto_usuario > 0:
+                calcular_ganancia_neta(chat_id, monto_usuario)
+            else:
+                enviar_mensaje(chat_id, "⚠️ El monto debe ser un número mayor a cero.", crear_teclado_principal(chat_id))
+        except ValueError:
+            # Si no es un número, responde con el mensaje estándar del sistema
+            enviar_mensaje(chat_id, "Usa /start o selecciona una opción del menú.", crear_teclado_principal(chat_id))
 
 # ==================== POLLING ====================
 

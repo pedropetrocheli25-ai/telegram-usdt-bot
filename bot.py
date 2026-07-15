@@ -69,6 +69,9 @@ precio_apertura_ves = None
 ultima_alerta_enviada = None         # Mantenida por compatibilidad de variables globales
 ultimo_registro_prediccion = None    # Cooldown para limitar muestras idénticas en el historial
 
+# Búfer cuantitativo para suavizar la fuerza del mercado (Promedio Móvil - 10 muestras)
+historico_fuerza = deque(maxlen=10)
+
 # ==================== HISTORIAL DE PREDICCIONES ====================
 historial_predicciones = deque(maxlen=100)
 estadisticas_predicciones = {
@@ -364,9 +367,10 @@ def obtener_analisis_ves():
         'muestras': len(precios)
     }
 
-# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN ====================
+# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (SUAVIZADO MACRO) ====================
 
 def analizar_tendencia_mercado(moneda='VES'):
+    global historico_fuerza
     try:
         url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
@@ -383,60 +387,72 @@ def analizar_tendencia_mercado(moneda='VES'):
                 vol_demanda += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
 
         vol_oferta = 0.0
+        precio_venta_ref = 0.0
         data_buy = {"asset": "USDT", "fiat": moneda, "tradeType": "BUY", "page": 1, "rows": 15, "payTypes": []}
 
         r_buy = requests.post(url, json=data_buy, headers=headers, timeout=10)
         if r_buy.status_code == 200 and r_buy.json().get('data'):
             anuncios = r_buy.json()['data']
+            precio_venta_ref = float(anuncios[0]['adv']['price'])
             for adv in anuncios:
                 vol_oferta += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
 
         if vol_demanda == 0 or vol_oferta == 0:
             return None, "⚠️ API temporalmente sin data de profundidad de volumen."
 
+        # 1. Análisis del desequilibrio instantáneo
         vol_total = vol_demanda + vol_oferta
         delta_volumen = vol_demanda - vol_oferta
-        fuerza_mercado = (delta_volumen / vol_total) * 100  
+        fuerza_instantanea = (delta_volumen / vol_total) * 100  
 
-        porcentaje_umbral_alcista = 15.0  
-        porcentaje_umbral_bajista = -15.0
+        # 2. Promedio Móvil de Fuerza (Suavizado de ruido financiero)
+        historico_fuerza.append(fuerza_instantanea)
+        fuerza_suavizada = sum(historico_fuerza) / len(historico_fuerza)
 
-        if fuerza_mercado <= porcentaje_umbral_bajista:
-            tendencia = "🚀 ALCISTA INMINENTE"
+        # 3. Análisis de microestructura del Spread (Volatilidad)
+        spread_absoluto = abs(precio_compra_ref - precio_venta_ref) if precio_venta_ref > 0 else 0.0
+        spread_porcentaje = (spread_absoluto / precio_compra_ref) * 100 if precio_compra_ref > 0 else 0.0
+        alerta_spread = "⚠️ Volatilidad alta (spread ensanchado)" if spread_porcentaje > 1.2 else "✅ Liquidez óptima (spread controlado)"
+
+        # Umbral robusto del 45% aplicado sobre la tendencia suavizada macro
+        UMBRAL_CRITICO = 45.0
+
+        if fuerza_suavizada >= UMBRAL_CRITICO:
+            tendencia = "🚀 PRESIÓN ALCISTA"
             emoji = "🟢"
-            prediccion = "📈 Muro de oferta detectado. Los compradores activos están absorbiendo rápido. El precio tiende a SUBIR."
+            prediccion = f"Absorción acelerada de la oferta respaldada por flujo promedio acumulado. Los compradores activos empujan el precio al alza. {alerta_spread}."
             confianza = "Alta"
-            recomendacion = "💰 COMPRA - Alta liquidez de salida siendo consumida"
+            recomendacion = "💰 COMPRA - Demanda consistente superando a la oferta"
             puntaje = 7
-        elif fuerza_mercado >= porcentaje_umbral_alcista:
-            tendencia = "🔻 BAJISTA INMINENTE"
+        elif fuerza_suavizada <= -UMBRAL_CRITICO:
+            tendencia = "🔻 PRESIÓN BAJISTA"
             emoji = "🔴"
-            prediccion = "📉 Demanda acumulada sin ejecución. Presión de venta latente. El precio tiende a BAJAR."
+            prediccion = f"Saturación de oferta consolidada. Acumulación de órdenes de venta sin contraparte compradora a mediano plazo. El precio tiende a la baja. {alerta_spread}."
             confianza = "Alta"
-            recomendacion = "⚠️ VENDE - Agotamiento de compradores en el libro"
+            recomendacion = "⚠️ VENDE - Exceso de oferta promedio en el libro"
             puntaje = -7
         else:
             tendencia = "➡️ NEUTRAL / ESTABLE"
             emoji = "🟡"
-            prediccion = "⏳ Mercado en equilibrio de mercado (Soporte dinámico activo)."
+            prediccion = f"Mercado en rango controlado y equilibrio dinámico. Flujo sin desequilibrios mayores en el promedio móvil. {alerta_spread}."
             confianza = "Media"
             recomendacion = "⏳ ESPERA - Rango plano controlado"
             puntaje = 0
 
-        # Creación lineal del diccionario para asegurar compatibilidad estricta
+        # Estructuración de salida
         resultado = {}
         resultado['precio_actual'] = precio_compra_ref if precio_compra_ref > 0 else (historial_ves[-1] if historial_ves else 0.0)
-        resultado['cambio_10min'] = fuerza_mercado
-        resultado['cambio_30min'] = fuerza_mercado * 0.8
-        resultado['cambio_1id'] = fuerza_mercado * 0.5
-        resultado['cambio_1hora'] = fuerza_mercado * 0.5
-        resultado['cambio_2h'] = fuerza_mercado * 0.2
+        resultado['cambio_10min'] = fuerza_suavizada  # El bot ahora evalúa basándose en la tendencia ponderada
+        resultado['cambio_30min'] = fuerza_suavizada * 0.8
+        resultado['cambio_1id'] = fuerza_suavizada * 0.5
+        resultado['cambio_1hora'] = fuerza_suavizada * 0.5
+        resultado['cambio_2h'] = fuerza_suavizada * 0.2
         resultado['promedio'] = vol_total / 2
-        resultado['volatilidad'] = abs(fuerza_mercado)
+        resultado['volatilidad'] = spread_porcentaje  # Volatilidad mapeada directamente por el spread
         resultado['soporte'] = precio_compra_ref * 0.995
         resultado['resistencia'] = precio_compra_ref * 1.005
         resultado['momentum'] = delta_volumen / 1000000
-        resultado['rsi'] = 50 - (fuerza_mercado / 2)
+        resultado['rsi'] = 50 - (fuerza_suavizada / 2)
         resultado['puntaje'] = puntaje
         resultado['tendencia'] = tendencia
         resultado['emoji'] = emoji
@@ -684,7 +700,7 @@ def verificar_alertas(precios):
                 time.sleep(0.05)
 
                 if moneda in ['COP', 'PEN']:
-                    enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} procesada con éxito.*")
+                    enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} processed con éxito.*")
 
         for moneda in ['VES', 'COP', 'PEN']:
             if moneda in precios and precios[moneda]:
@@ -946,13 +962,14 @@ def actualizar_precios():
                         precio_anterior = estadisticas_predicciones['ultima_prediccion']['precio_actual']
                         if precio_anterior > 0:
                             variacion_porcentaje = abs((precio_actual - precio_anterior) / precio_anterior) * 100
+                            # Umbral optimizado al 0.5% según criterio económico profesional
                             if variacion_porcentaje >= 0.5:
                                 debe_guardar = True
 
                     if debe_guardar:
                         guardar_prediccion(analisis)
                         ultimo_registro_prediccion = ahora
-                        print(f"🔮 Nueva predicción registrada por variación del 2% (Precio: {precio_actual:.2f}).")
+                        print(f"🔮 Nueva predicción registrada por variación del 0.5% (Precio: {precio_actual:.2f}).")
                     
                     verificar_predicciones()
 
@@ -967,11 +984,13 @@ def actualizar_precios():
                                 debe_notificar = True
 
                         if debe_notificar:
-                            msg_alerta = f"🚨 *ALERTA DE VOLUMEN P2P CRÍTICA* 🚨\n\n" \
-                                         f"🧭 *Dirección Proyectada:* {analisis['tendencia']}\n" \
-                                         f"📊 *Desequilibrio de Órdenes:* {delta_actual:+.1f}%\n" \
-                                         f"💡 *Acción:* {analisis['prediccion']}\n" \
-                                         f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+                            # Alerta rediseñada con el estándar y rigurosidad de análisis financiero
+                            msg_alerta = f"🚨 *ALERTA DE DESEQUILIBRIO CAMBIARIO (P2P)* 🚨\n\n" \
+                                         f"🧭 *Sesgo del Mercado:* {analisis['tendencia']}\n" \
+                                         f"📊 *Ratio de Liquidez (Oferta/Demanda):* {delta_actual:+.1f}% " \
+                                         f"({'Exceso de Demanda' if delta_actual >= 0 else 'Exceso de Oferta'})\n\n" \
+                                         f"💡 *Diagnóstico Macroeconómico:*\n{analisis['prediccion']}\n\n" \
+                                         f"🕐 *Captura de Datos:* {datetime.now().strftime('%H:%M:%S')}"
 
                             for usr in obtener_usuarios():
                                 try:
@@ -1023,19 +1042,21 @@ def mostrar_analisis_mercado(chat_id):
         enviar_mensaje(chat_id, err, crear_teclado_opciones(chat_id))
         return
 
+    # Plantilla de análisis en menú también adaptada a la estética profesional
     mensaje = f"""📊 *ANÁLISIS CUANTITATIVO (ORDER FLOW P2P)*
 
-{analisis['emoji']} Tendencia: {analisis['tendencia']}
+{analisis['emoji']} Sesgo del Mercado: {analisis['tendencia']}
 🕐 {datetime.now().strftime('%H:%M:%S')}
 📈 Precio Referencia: {analisis['precio_actual']:.2f} Bs
 
 📊 *Métricas de Flujo:*
-• Fuerza del Delta: {analisis['cambio_10min']:+.2f}%
+• Fuerza del Delta (Ratio): {analisis['cambio_10min']:+.2f}%
 • Presión Neta (Order Flow): {analisis['momentum']:+.3f}M
+• Volatilidad (Spread): {analisis['volatilidad']:.3f}%
 
-🔮 *Predicción de Volumen:* {analisis['prediccion']}
+🔮 *Diagnóstico Macroeconómico:* {analisis['prediccion']}
+
 🎯 *Confianza Matemática:* {analisis['confianza']}
-
 💡 *Recomendación:* {analisis['recomendacion']}
 
 🔄 Análisis basado en profundidad de órdenes reales del P2P actual."""

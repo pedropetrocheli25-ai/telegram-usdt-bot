@@ -85,7 +85,7 @@ estadisticas_predicciones = {
 # ==================== FUNCIONES BASE DE TELEGRAM ====================
 
 def crear_teclado_principal(chat_id):
-    """Genera el menú de inicio con la nueva jerarquía solicitada"""
+    """Genera el menú de inicio con botones en fila única (uno debajo de otro)"""
     teclado = [
         ["💰 Precio USDT"],
         ["🪙 Tether USDT vs BCV"],
@@ -96,14 +96,14 @@ def crear_teclado_principal(chat_id):
     if chat_id == ADMIN_ID:
         teclado.append(["🏦 Tasas de Cambio"])
 
-    # El botón "¿Cuánto Gané?" ahora es de acceso directo en el menú principal
+    # Botones colocados estrictamente uno debajo del otro
     teclado.append(["💰 ¿Cuánto Gané?"])
     teclado.append(["📋 + Opciones"])
 
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_opciones(chat_id):
-    """Genera el menú de opciones secundarias sin duplicar botones"""
+    """Genera el menú de opciones secundarias en fila única (uno debajo de otro)"""
     teclado = [
         ["🇻🇪 Precio VES"],
         ["🇨🇴 Precio COP"],
@@ -114,7 +114,8 @@ def crear_teclado_opciones(chat_id):
         teclado.append(["👥 Usuarios Registrados"])
 
     teclado.append(["📊 Análisis Mercado"])
-    teclado.append(["📋 Historial Predicciones", "📈 Estadísticas"])
+    teclado.append(["📋 Historial Predicciones"])
+    teclado.append(["📈 Estadísticas"])
     teclado.append(["🔙 Volver al menú principal"])
 
     return {"keyboard": teclado, "resize_keyboard": True}
@@ -372,7 +373,7 @@ def obtener_analisis_ves():
         'muestras': len(precios)
     }
 
-# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN ====================
+# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (CORREGIDO) ====================
 
 def analizar_tendencia_mercado(moneda='VES'):
     global historico_fuerza
@@ -380,7 +381,8 @@ def analizar_tendencia_mercado(moneda='VES'):
         url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
 
-        vol_demanda = 0.0
+        # 1. tradeType: SELL -> Anunciantes vendiendo USDT -> Representa la OFERTA (Supply)
+        vol_oferta = 0.0
         precio_compra_ref = 0.0
         data_sell = {"asset": "USDT", "fiat": moneda, "tradeType": "SELL", "page": 1, "rows": 15, "payTypes": []}
 
@@ -389,9 +391,10 @@ def analizar_tendencia_mercado(moneda='VES'):
             anuncios = r_sell.json()['data']
             precio_compra_ref = float(anuncios[0]['adv']['price'])
             for adv in anuncios:
-                vol_demanda += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
+                vol_oferta += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
 
-        vol_oferta = 0.0
+        # 2. tradeType: BUY -> Anunciantes comprando USDT -> Representa la DEMANDA (Demand)
+        vol_demanda = 0.0
         precio_venta_ref = 0.0
         data_buy = {"asset": "USDT", "fiat": moneda, "tradeType": "BUY", "page": 1, "rows": 15, "payTypes": []}
 
@@ -400,26 +403,25 @@ def analizar_tendencia_mercado(moneda='VES'):
             anuncios = r_buy.json()['data']
             precio_venta_ref = float(anuncios[0]['adv']['price'])
             for adv in anuncios:
-                vol_oferta += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
+                vol_demanda += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
 
         if vol_demanda == 0 or vol_oferta == 0:
             return None, "⚠️ API temporalmente sin data de profundidad de volumen."
 
-        # 1. Análisis del desequilibrio instantáneo
+        # 3. Análisis del desequilibrio instantáneo (Corregido: Demanda - Oferta)
         vol_total = vol_demanda + vol_oferta
         delta_volumen = vol_demanda - vol_oferta
         fuerza_instantanea = (delta_volumen / vol_total) * 100  
 
-        # 2. Promedio Móvil de Fuerza (Suavizado de ruido financiero)
+        # Promedio Móvil de Fuerza
         historico_fuerza.append(fuerza_instantanea)
         fuerza_suavizada = sum(historico_fuerza) / len(historico_fuerza)
 
-        # 3. Análisis de microestructura del Spread (Volatilidad)
+        # Análisis de microestructura del Spread
         spread_absoluto = abs(precio_compra_ref - precio_venta_ref) if precio_venta_ref > 0 else 0.0
         spread_porcentaje = (spread_absoluto / precio_compra_ref) * 100 if precio_compra_ref > 0 else 0.0
         alerta_spread = "⚠️ Volatilidad alta (spread ensanchado)" if spread_porcentaje > 1.2 else "✅ Liquidez óptima (spread controlado)"
 
-        # Umbral robusto del 45% aplicado sobre la tendencia suavizada macro
         UMBRAL_CRITICO = 45.0
 
         if fuerza_suavizada >= UMBRAL_CRITICO:
@@ -432,9 +434,9 @@ def analizar_tendencia_mercado(moneda='VES'):
         elif fuerza_suavizada <= -UMBRAL_CRITICO:
             tendencia = "🔻 PRESIÓN BAJISTA"
             emoji = "🔴"
-            prediccion = f"Saturación de oferta consolidada. Acumulación de órdenes de venta sin contraparte compradora a mediano plazo. El precio tiende a la baja. {alerta_spread}."
+            prediccion = f"Saturación de oferta en el libro de órdenes. Liquidaciones masivas buscando liquidez en Bs (comportamiento típico de intervención). El precio tiende a la baja. {alerta_spread}."
             confianza = "Alta"
-            recomendacion = "⚠️ VENDE - Exceso de oferta promedio en el libro"
+            recomendacion = "⚠️ VENDE / ESPERA - Exceso de oferta circulante en el libro"
             puntaje = -7
         else:
             tendencia = "➡️ NEUTRAL / ESTABLE"
@@ -444,27 +446,27 @@ def analizar_tendencia_mercado(moneda='VES'):
             recomendacion = "⏳ ESPERA - Rango plano controlado"
             puntaje = 0
 
-        # Estructuración de salida
-        resultado = {}
-        resultado['precio_actual'] = precio_compra_ref if precio_compra_ref > 0 else (historial_ves[-1] if historial_ves else 0.0)
-        resultado['cambio_10min'] = fuerza_suavizada  # El bot ahora evalúa basándose en la tendencia ponderada
-        resultado['cambio_30min'] = fuerza_suavizada * 0.8
-        resultado['cambio_1id'] = fuerza_suavizada * 0.5
-        resultado['cambio_1hora'] = fuerza_suavizada * 0.5
-        resultado['cambio_2h'] = fuerza_suavizada * 0.2
-        resultado['promedio'] = vol_total / 2
-        resultado['volatilidad'] = spread_porcentaje  # Volatilidad mapeada directamente por el spread
-        resultado['soporte'] = precio_compra_ref * 0.995
-        resultado['resistencia'] = precio_compra_ref * 1.005
-        resultado['momentum'] = delta_volumen / 1000000
-        resultado['rsi'] = 50 - (fuerza_suavizada / 2)
-        resultado['puntaje'] = puntaje
-        resultado['tendencia'] = tendencia
-        resultado['emoji'] = emoji
-        resultado['prediccion'] = prediccion
-        resultado['confianza'] = confianza
-        resultado['recomendacion'] = recomendacion
-        resultado['muestras'] = len(historial_ves)
+        resultado = {
+            'precio_actual': precio_compra_ref if precio_compra_ref > 0 else (historial_ves[-1] if historial_ves else 0.0),
+            'cambio_10min': fuerza_suavizada,
+            'cambio_30min': fuerza_suavizada * 0.8,
+            'cambio_1id': fuerza_suavizada * 0.5,
+            'cambio_1hora': fuerza_suavizada * 0.5,
+            'cambio_2h': fuerza_suavizada * 0.2,
+            'promedio': vol_total / 2,
+            'volatilidad': spread_porcentaje,
+            'soporte': precio_compra_ref * 0.995,
+            'resistencia': precio_compra_ref * 1.005,
+            'momentum': delta_volumen / 1000000,
+            'rsi': 50 - (fuerza_suavizada / 2),
+            'puntaje': puntaje,
+            'tendencia': tendencia,
+            'emoji': emoji,
+            'prediccion': prediccion,
+            'confianza': confianza,
+            'recomendacion': recomendacion,
+            'muestras': len(historial_ves)
+        }
 
         return resultado, None
 
@@ -573,7 +575,6 @@ def obtener_estadisticas_precision():
     precision_bajista = (precision_bajista / total_bajista * 100) if total_bajista > 0 else 0
     precision_neutral = (precision_neutral / total_neutral * 100) if total_neutral > 0 else 0
 
-    # Retorno seguro estructurado por variables lineales
     salida = {}
     salida['total_predicciones'] = estadisticas_predicciones['total_predicciones']
     salida['verificadas'] = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
@@ -790,7 +791,7 @@ def mostrar_tether_vs_bcv(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== CALCULO ¿CUÁNTO GANÉ? (MODIFICADO - INTERACTIVO) ====================
+# ==================== CALCULO ¿CUÁNTO GANÉ? ====================
 
 def calcular_ganancia_neta(chat_id, monto=100.0):
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
@@ -838,7 +839,6 @@ Análisis financiero detallado basado en un capital de *${monto:,.2f} USD*:
 
 🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
 
-    # Retorna al menú principal que es donde ahora reside este botón
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 # ==================== HISTORIAL VES ====================
@@ -863,7 +863,7 @@ def mostrar_historial_ves(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== PROCESAR MENSAJES (MODIFICADO - RECONOCIMIENTO DE MONTOS) ====================
+# ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
     if not usuario_esta_en_grupo(chat_id):
@@ -932,7 +932,7 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
         if chat_id == ADMIN_ID:
             usuarios = obtener_usuarios()
             if usuarios:
-                mensaje = f"👥 *SISTEMA AUTOMÁTICO ACTIVO*\n\nTotal interactuando: {len(usuarios)}\n\nEl bot verifica accesos en tiempo real mediante Rose."
+                mensaje = f"👥 *SISTEMA AUTOMÁTIVO ACTIVO*\n\nTotal interactuando: {len(usuarios)}\n\nEl bot verifica accesos en tiempo real mediante Rose."
                 for uid in usuarios:
                     mensaje += f"\n• `{uid}`"
             else:
@@ -944,7 +944,6 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
     elif texto == '📊 Análisis Mercado' or texto == '/analisis':
         mostrar_analisis_mercado(chat_id)
 
-    # ACCIÓN DEL BOTÓN: Explica cómo usar el calculador interactivo
     elif texto == '💰 ¿Cuánto Gané?' or texto == '/cuantogane':
         mensaje = "✍️ *Calculadora Inteligente*\n\nPor favor, escribe directamente en el chat el monto en *USD* que deseas calcular (ejemplo: `50` o `150.50`) y te daré el desglose de tu ganancia al instante."
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
@@ -956,7 +955,6 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
         mostrar_estadisticas_detalladas(chat_id)
 
     else:
-        # DETECTOR DE NÚMEROS: Intenta convertir lo que escribe el usuario en un número
         try:
             monto_limpio = texto.replace(',', '.')
             monto_usuario = float(monto_limpio)
@@ -966,7 +964,6 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
             else:
                 enviar_mensaje(chat_id, "⚠️ El monto debe ser un número mayor a cero.", crear_teclado_principal(chat_id))
         except ValueError:
-            # Si no es un número, responde con el mensaje estándar del sistema
             enviar_mensaje(chat_id, "Usa /start o selecciona una opción del menú.", crear_teclado_principal(chat_id))
 
 # ==================== POLLING ====================
@@ -1103,7 +1100,7 @@ def mantener_activo():
 def home():
     return f"✅ Bot activo 24/7\n🔒 Canal/Grupo Vinculado: {GRUPO_AUTORIZADO_ID}\n📊 {len(historial_ves)} muestras VES\n📊 {len(historial_predicciones)} predicciones\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
 
-# ==================== FUNCIÓN AGREGADA PARA REACTIVAR ANÁLISIS DE MERCADO ====================
+# ==================== ANALISIS MERCADO ====================
 
 def mostrar_analisis_mercado(chat_id):
     analisis, err = analizar_tendencia_mercado('VES')

@@ -84,6 +84,41 @@ estadisticas_predicciones = {
 
 # ==================== FUNCIONES BASE DE TELEGRAM ====================
 
+def crear_teclado_principal(chat_id):
+    """Genera el menú de inicio con la nueva jerarquía solicitada"""
+    teclado = [
+        ["💰 Precio USDT"],
+        ["🪙 Tether USDT vs BCV"],
+        ["📈 Historial de brecha VES"]
+    ]
+
+    # Si es el Administrador, se añade la opción de Tasas de Cambio aquí
+    if chat_id == ADMIN_ID:
+        teclado.append(["🏦 Tasas de Cambio"])
+
+    # El botón "¿Cuánto Gané?" ahora es de acceso directo en el menú principal
+    teclado.append(["💰 ¿Cuánto Gané?"])
+    teclado.append(["📋 + Opciones"])
+
+    return {"keyboard": teclado, "resize_keyboard": True}
+
+def crear_teclado_opciones(chat_id):
+    """Genera el menú de opciones secundarias sin duplicar botones"""
+    teclado = [
+        ["🇻🇪 Precio VES"],
+        ["🇨🇴 Precio COP"],
+        ["🇵🇪 Precio PEN"]
+    ]
+
+    if chat_id == ADMIN_ID:
+        teclado.append(["👥 Usuarios Registrados"])
+
+    teclado.append(["📊 Análisis Mercado"])
+    teclado.append(["📋 Historial Predicciones", "📈 Estadísticas"])
+    teclado.append(["🔙 Volver al menú principal"])
+
+    return {"keyboard": teclado, "resize_keyboard": True}
+
 def enviar_mensaje(chat_id, texto, teclado=None):
     try:
         url = URL_TELEGRAM + "sendMessage"
@@ -94,36 +129,6 @@ def enviar_mensaje(chat_id, texto, teclado=None):
         return response.status_code == 200
     except:
         return False
-
-def crear_teclado_principal(chat_id):
-    teclado = [
-        ["💰 Precio USDT"],
-        ["🪙 Tether USDT vs BCV"],
-        ["📈 Historial de brecha VES"]
-    ]
-
-    if chat_id == ADMIN_ID:
-        teclado.append(["🏦 Tasas de Cambio"])
-
-    teclado.append(["📋 + Opciones"])
-
-    return {"keyboard": teclado, "resize_keyboard": True}
-
-def crear_teclado_opciones(chat_id):
-    teclado = [
-        ["🇻🇪 Precio VES"],
-        ["🇨🇴 Precio COP"],
-        ["🇵🇪 Precio PEN"]
-    ]
-
-    if chat_id == ADMIN_ID:
-        teclado.append(["👥 Usuarios Registrados"])
-
-    teclado.append(["📊 Análisis Mercado", "💰 ¿Cuánto Gané?"])
-    teclado.append(["📋 Historial Predicciones", "📈 Estadísticas"])
-    teclado.append(["🔙 Volver al menú principal"])
-
-    return {"keyboard": teclado, "resize_keyboard": True}
 
 # ==================== PRECIOS CON CACHÉ ====================
 
@@ -300,7 +305,8 @@ def verificar_fluctuacion_tasas():
         return
 
     if not ultimas_tasas_cruzadas:
-        ultimas_tasas_cruzadas = tasas_actuales.copy()
+        using_tasas = tasas_actuales.copy()
+        ultimas_tasas_cruzadas = using_tasas
         guardar_tasas_anteriores()
         return
 
@@ -366,7 +372,7 @@ def obtener_analisis_ves():
         'muestras': len(precios)
     }
 
-# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (SUAVIZADO MACRO) ====================
+# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN ====================
 
 def analizar_tendencia_mercado(moneda='VES'):
     global historico_fuerza
@@ -784,31 +790,24 @@ def mostrar_tether_vs_bcv(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== NUEVA FUNCIÓN: CALCULO ¿CUÁNTO GANÉ? ====================
+# ==================== CALCULO ¿CUÁNTO GANÉ? ====================
 
 def calcular_ganancia_neta(chat_id):
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
 
     if not compra_ves or not tasas:
-        enviar_mensaje(chat_id, "⏳ No se pudieron cargar los precios de Binance P2P o del BCV. Intenta de nuevo.", crear_teclado_opciones(chat_id))
+        enviar_mensaje(chat_id, "⏳ No se pudieron cargar los precios de Binance P2P o del BCV. Intenta de nuevo.", crear_teclado_principal(chat_id))
         return
 
-    # 1. Costo de adquisición (Precio BCV + 0.5% por cada $100)
     bcv_mas_medio = tasas['usd'] * 1.005
     costo_bcv_100usd = bcv_mas_medio * 100.00
 
-    # 2. Descuentos de comisiones en cascada sobre los 100 USDT de capital
-    # Descuento del 1.5% por uso de tarjeta
     usdt_neto_tarjeta = 100.00 * (1 - 0.015)  # 98.50 USDT
-    # Descuento del 4.1% por comisión de pasarela Bpay
     usdt_final = usdt_neto_tarjeta * (1 - 0.041)  # 94.4615 USDT
 
-    # 3. Retorno neto en VES (Se vende al precio de venta del bot que proviene de Binance P2P)
-    # Nota: venta_ves es el precio máximo del tradeType BUY de Binance (el precio de venta real del usuario)
     retorno_ves = usdt_final * venta_ves
 
-    # 4. Cálculo de Utilidad / Pérdida final
     ganancia_neta_ves = retorno_ves - costo_bcv_100usd
     ganancia_porcentaje = (ganancia_neta_ves / costo_bcv_100usd) * 100
 
@@ -838,7 +837,8 @@ Análisis financiero detallado basado en un capital de *$100 USD*:
 
 🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
 
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+    # Retorna al menú principal que es donde ahora reside este botón
+    enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 # ==================== HISTORIAL VES ====================
 
@@ -1020,7 +1020,6 @@ def actualizar_precios():
                         precio_anterior = estadisticas_predicciones['ultima_prediccion']['precio_actual']
                         if precio_anterior > 0:
                             variacion_porcentaje = abs((precio_actual - precio_anterior) / precio_anterior) * 100
-                            # Umbral optimizado al 0.5% según criterio económico profesional
                             if variacion_porcentaje >= 0.5:
                                 debe_guardar = True
 
@@ -1042,7 +1041,6 @@ def actualizar_precios():
                                 debe_notificar = True
 
                         if debe_notificar:
-                            # Alerta rediseñada con el estándar y rigurosidad de análisis financiero
                             msg_alerta = f"🚨 *ALERTA DE DESEQUILIBRIO CAMBIARIO (P2P)* 🚨\n\n" \
                                          f"🧭 *Sesgo del Mercado:* {analisis['tendencia']}\n" \
                                          f"📊 *Ratio de Liquidez (Oferta/Demanda):* {delta_actual:+.1f}% " \
@@ -1100,7 +1098,6 @@ def mostrar_analisis_mercado(chat_id):
         enviar_mensaje(chat_id, err, crear_teclado_opciones(chat_id))
         return
 
-    # Plantilla de análisis en menú también adaptada a la estética profesional
     mensaje = f"""📊 *ANÁLISIS CUANTITATIVO (ORDER FLOW P2P)*
 
 {analisis['emoji']} Sesgo del Mercado: {analisis['tendencia']}

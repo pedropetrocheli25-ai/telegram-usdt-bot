@@ -119,9 +119,8 @@ def crear_teclado_opciones(chat_id):
     if chat_id == ADMIN_ID:
         teclado.append(["👥 Usuarios Registrados"])
 
-    teclado.append(["📊 Análisis Mercado"])
-    teclado.append(["📋 Historial Predicciones"])
-    teclado.append(["📈 Estadísticas"])
+    teclado.append(["📊 Análisis Mercado", "💰 ¿Cuánto Gané?"])
+    teclado.append(["📋 Historial Predicciones", "📈 Estadísticas"])
     teclado.append(["🔙 Volver al menú principal"])
 
     return {"keyboard": teclado, "resize_keyboard": True}
@@ -785,6 +784,62 @@ def mostrar_tether_vs_bcv(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
+# ==================== NUEVA FUNCIÓN: CALCULO ¿CUÁNTO GANÉ? ====================
+
+def calcular_ganancia_neta(chat_id):
+    compra_ves, venta_ves = obtener_precios_con_cache('VES')
+    tasas = obtener_tasas_bcv()
+
+    if not compra_ves or not tasas:
+        enviar_mensaje(chat_id, "⏳ No se pudieron cargar los precios de Binance P2P o del BCV. Intenta de nuevo.", crear_teclado_opciones(chat_id))
+        return
+
+    # 1. Costo de adquisición (Precio BCV + 0.5% por cada $100)
+    bcv_mas_medio = tasas['usd'] * 1.005
+    costo_bcv_100usd = bcv_mas_medio * 100.00
+
+    # 2. Descuentos de comisiones en cascada sobre los 100 USDT de capital
+    # Descuento del 1.5% por uso de tarjeta
+    usdt_neto_tarjeta = 100.00 * (1 - 0.015)  # 98.50 USDT
+    # Descuento del 4.1% por comisión de pasarela Bpay
+    usdt_final = usdt_neto_tarjeta * (1 - 0.041)  # 94.4615 USDT
+
+    # 3. Retorno neto en VES (Se vende al precio de venta del bot que proviene de Binance P2P)
+    # Nota: venta_ves es el precio máximo del tradeType BUY de Binance (el precio de venta real del usuario)
+    retorno_ves = usdt_final * venta_ves
+
+    # 4. Cálculo de Utilidad / Pérdida final
+    ganancia_neta_ves = retorno_ves - costo_bcv_100usd
+    ganancia_porcentaje = (ganancia_neta_ves / costo_bcv_100usd) * 100
+
+    emoji_resultado = "💵" if ganancia_neta_ves >= 0 else "⚠️"
+    mensaje = f"""{emoji_resultado} *CALCULADORA DE RETORNO NETO*
+
+Análisis financiero detallado basado en un capital de *$100 USD*:
+
+*1. Costo de Intervención (Egreso):*
+• BCV Oficial: {tasas['usd']:.2f} Bs
+• BCV + 0.50%: {bcv_mas_medio:.2f} Bs
+• Total Invertido (100$): {costo_bcv_100usd:.2f} Bs
+
+*2. Liquidación y Comisiones:*
+• Capital base: 100.00 USDT
+• Tarjeta (-1.5%): {usdt_neto_tarjeta:.2f} USDT
+• Bpay (-4.1%): {usdt_final:.4f} USDT (Monto a liquidar)
+
+*3. Retorno en P2P (Venta VES):*
+• Tasa de Venta: {venta_ves:.2f} Bs
+• Total Retornado: {retorno_ves:.2f} Bs
+
+━━━━━━━━━━━━━━━━━━━━
+📊 *GANANCIA NETA TOTAL:*
+• Retorno Neto: *{ganancia_neta_ves:+.2f} Bs* ({ganancia_porcentaje:+.2f}%)
+━━━━━━━━━━━━━━━━━━━━
+
+🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
+
+    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+
 # ==================== HISTORIAL VES ====================
 
 def mostrar_historial_ves(chat_id):
@@ -887,6 +942,9 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
 
     elif texto == '📊 Análisis Mercado' or texto == '/analisis':
         mostrar_analisis_mercado(chat_id)
+
+    elif texto == '💰 ¿Cuánto Gané?' or texto == '/cuantogane':
+        calcular_ganancia_neta(chat_id)
 
     elif texto == '📋 Historial Predicciones' or texto == '/historial_predicciones':
         mostrar_historial_predicciones(chat_id)

@@ -30,8 +30,8 @@ app = Flask(__name__)
 # ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {
     'VES': 1.0,    # 1.00 VES neto
-    'COP': 100.0,  # 100.00 COP neto
-    'PEN': 0.10    # 0.10 PEN neto
+    'COP': 50.0,  # 50.00 COP neto
+    'PEN': 0.10    # 0.05 PEN neto
 }
 
 FLUCTUACION_UMBRAL = 0.8
@@ -72,7 +72,7 @@ def crear_teclado_principal(chat_id):
     """Genera el menú de inicio con la nueva estructura de botones solicitada"""
     teclado = [
         ["Tether + BCV"],
-        ["¿Cuánto es?"],
+        ["¿Cuánto Es?"],
         ["¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
@@ -88,10 +88,10 @@ def crear_teclado_principal(chat_id):
 def crear_teclado_opciones(chat_id):
     """Genera el menú de opciones secundarias con la nueva estructura solicitada"""
     teclado = [
-        ["Precio USDT"],
-        ["Precio VES"],
-        ["Precio COP"],
-        ["Precio PEN"]
+        ["🪙Precio USDT"],
+        ["🇻🇪Precio VES"],
+        ["🇨🇴Precio COP"],
+        ["🇵🇪Precio PEN"]
     ]
 
     if chat_id == ADMIN_ID:
@@ -486,9 +486,8 @@ def mostrar_tether_vs_bcv(chat_id):
     mensaje += f"🇻🇪 *PRECIO VES EN EL MOMENTO (Binance P2P):*\n"
     mensaje += f"  🟢 COMPRA (Tasa): {compra:.2f} Bs\n"
     mensaje += f"  🔴 VENTA: {venta:.2f} Bs\n"
-    mensaje += f"  📊 Spread: {compra-venta:.2f} Bs\n\n"
     
-    mensaje += f"⚖️ *Diferencia vs BCV+0.50%:*\n"
+    mensaje += f"⚖️ *USDT vs BCV+0.50%:*\n"
     mensaje += f"  Diferencia: {diff_compra:+.2f} Bs\n"
     mensaje += f"  Porcentaje: {pct_compra:+.1f}%\n"
 
@@ -567,15 +566,12 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
 📊 *Tasa de Referencia:*
 • BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*
 
-━━━━━━━━━━━━━━━━━━━━
 ✍️ *Operación (Bs ➔ $):*
 • Monto ingresado: *{monto_bs:,.2f} Bs*
 • Cálculo: Dividido entre tasa BCV + 0.50%
 
 💵 *Total equivalente:* *${resultado_usd:,.2f} USD*
-━━━━━━━━━━━━━━━━━━━━
 
-🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
         elif '$' in texto_limpio or 'usd' in texto_limpio:
@@ -589,15 +585,12 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
 📊 *Tasa de Referencia:*
 • BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*
 
-━━━━━━━━━━━━━━━━━━━━
 ✍️ *Operación ($ ➔ Bs):*
 • Monto ingresado: *${monto_usd:,.2f} USD*
 • Cálculo: Multiplicado por tasa BCV + 0.50%
 
 🇻🇪 *Total equivalente:* *{resultado_bs:,.2f} Bs*
-━━━━━━━━━━━━━━━━━━━━
 
-🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
         else:

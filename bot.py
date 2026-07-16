@@ -27,7 +27,7 @@ ultimo_update_id = 0
 
 app = Flask(__name__)
 
-# ==================== ALERTAS DE PRECIO FINANCIERO (NOTIFICACIÓN 1) ====================
+# ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {
     'VES': 1.0,    # 1.00 VES neto
     'COP': 100.0,  # 100.00 COP neto
@@ -37,9 +37,6 @@ UMBRALES = {
 FLUCTUACION_UMBRAL = 0.8
 
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
-
-# ==================== VARIABLES DE CONTROL DE VOLUMEN (NOTIFICACIÓN 2) ====================
-ultimo_delta_notificado = None  # Guarda la fuerza del delta de la última alerta para aplicar filtro de 5%
 
 # ==================== CONTROL DE ACCESO AUTOMÁTICO por GRUPO ====================
 GRUPO_AUTORIZADO_ID = -5370892602  
@@ -65,58 +62,42 @@ CACHE_DURACION = 30
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
 
-# ==================== CONTROL DE SPAM Y ALERTAS CRÍTICAS ====================
-ultima_alerta_enviada = None         # Mantenida por compatibilidad de variables globales
-ultimo_registro_prediccion = None    # Cooldown para limitar muestras idénticas en el historial
-
-# Búfer cuantitativo para suavizar la fuerza del mercado (Promedio Móvil - 10 muestras)
-historico_fuerza = deque(maxlen=10)
-
-# ==================== HISTORIAL DE PREDICCIONES ====================
-historial_predicciones = deque(maxlen=100)
-estadisticas_predicciones = {
-    'aciertos': 0,
-    'fallos': 0,
-    'total_predicciones': 0,
-    'precision': 0,
-    'ultima_prediccion': None
-}
+# ==================== ESTADOS DE ENTRADA DE USUARIOS ====================
+# Guardará temporalmente si el usuario está esperando ingresar un monto para conversión
+usuario_esperando_calculo = {} 
 
 # ==================== FUNCIONES BASE DE TELEGRAM ====================
 
 def crear_teclado_principal(chat_id):
-    """Genera el menú de inicio con botones en fila única (uno debajo de otro)"""
+    """Genera el menú de inicio con la nueva estructura de botones solicitada"""
     teclado = [
-        ["💰 Precio USDT"],
-        ["🪙 Tether USDT vs BCV"],
+        ["Tether + BCV"],
+        ["¿Cuánto es?"],
+        ["¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
 
-    # Si es el Administrador, se añade la opción de Tasas de Cambio aquí
+    # Botón del Administrador
     if chat_id == ADMIN_ID:
         teclado.append(["🏦 Tasas de Cambio"])
 
-    # Botones colocados estrictamente uno debajo del otro
-    teclado.append(["💰 ¿Cuánto Gané?"])
-    teclado.append(["📋 + Opciones"])
+    teclado.append(["+ Opciones"])
 
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_opciones(chat_id):
-    """Genera el menú de opciones secundarias en fila única (uno debajo de otro)"""
+    """Genera el menú de opciones secundarias con la nueva estructura solicitada"""
     teclado = [
-        ["🇻🇪 Precio VES"],
-        ["🇨🇴 Precio COP"],
-        ["🇵🇪 Precio PEN"]
+        ["Precio USDT"],
+        ["Precio VES"],
+        ["Precio COP"],
+        ["Precio PEN"]
     ]
 
     if chat_id == ADMIN_ID:
-        teclado.append(["👥 Usuarios Registrados"])
+        teclado.append(["Usuarios Registrados"])
 
-    teclado.append(["📊 Análisis Mercado"])
-    teclado.append(["📋 Historial Predicciones"])
-    teclado.append(["📈 Estadísticas"])
-    teclado.append(["🔙 Volver al menú principal"])
+    teclado.append(["Volver al menú principal"])
 
     return {"keyboard": teclado, "resize_keyboard": True}
 
@@ -373,292 +354,6 @@ def obtener_analisis_ves():
         'muestras': len(precios)
     }
 
-# ==================== ANÁLISIS CUANTITATIVO DE VOLUMEN (CORREGIDO) ====================
-
-def analizar_tendencia_mercado(moneda='VES'):
-    global historico_fuerza
-    try:
-        url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-        headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
-
-        # 1. tradeType: SELL -> Anunciantes vendiendo USDT -> Representa la OFERTA (Supply)
-        vol_oferta = 0.0
-        precio_compra_ref = 0.0
-        data_sell = {"asset": "USDT", "fiat": moneda, "tradeType": "SELL", "page": 1, "rows": 15, "payTypes": []}
-
-        r_sell = requests.post(url, json=data_sell, headers=headers, timeout=10)
-        if r_sell.status_code == 200 and r_sell.json().get('data'):
-            anuncios = r_sell.json()['data']
-            precio_compra_ref = float(anuncios[0]['adv']['price'])
-            for adv in anuncios:
-                vol_oferta += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
-
-        # 2. tradeType: BUY -> Anunciantes comprando USDT -> Representa la DEMANDA (Demand)
-        vol_demanda = 0.0
-        precio_venta_ref = 0.0
-        data_buy = {"asset": "USDT", "fiat": moneda, "tradeType": "BUY", "page": 1, "rows": 15, "payTypes": []}
-
-        r_buy = requests.post(url, json=data_buy, headers=headers, timeout=10)
-        if r_buy.status_code == 200 and r_buy.json().get('data'):
-            anuncios = r_buy.json()['data']
-            precio_venta_ref = float(anuncios[0]['adv']['price'])
-            for adv in anuncios:
-                vol_demanda += float(adv['adv']['surplusAmount']) * float(adv['adv']['price'])
-
-        if vol_demanda == 0 or vol_oferta == 0:
-            return None, "⚠️ API temporalmente sin data de profundidad de volumen."
-
-        # 3. Análisis del desequilibrio instantáneo (Corregido: Demanda - Oferta)
-        vol_total = vol_demanda + vol_oferta
-        delta_volumen = vol_demanda - vol_oferta
-        fuerza_instantanea = (delta_volumen / vol_total) * 100  
-
-        # Promedio Móvil de Fuerza
-        historico_fuerza.append(fuerza_instantanea)
-        fuerza_suavizada = sum(historico_fuerza) / len(historico_fuerza)
-
-        # Análisis de microestructura del Spread
-        spread_absoluto = abs(precio_compra_ref - precio_venta_ref) if precio_venta_ref > 0 else 0.0
-        spread_porcentaje = (spread_absoluto / precio_compra_ref) * 100 if precio_compra_ref > 0 else 0.0
-        alerta_spread = "⚠️ Volatilidad alta (spread ensanchado)" if spread_porcentaje > 1.2 else "✅ Liquidez óptima (spread controlado)"
-
-        UMBRAL_CRITICO = 45.0
-
-        if fuerza_suavizada >= UMBRAL_CRITICO:
-            tendencia = "🚀 PRESIÓN ALCISTA"
-            emoji = "🟢"
-            prediccion = f"Absorción acelerada de la oferta respaldada por flujo promedio acumulado. Los compradores activos empujan el precio al alza. {alerta_spread}."
-            confianza = "Alta"
-            recomendacion = "💰 COMPRA - Demanda consistente superando a la oferta"
-            puntaje = 7
-        elif fuerza_suavizada <= -UMBRAL_CRITICO:
-            tendencia = "🔻 PRESIÓN BAJISTA"
-            emoji = "🔴"
-            prediccion = f"Saturación de oferta en el libro de órdenes. Liquidaciones masivas buscando liquidez en Bs (comportamiento típico de intervención). El precio tiende a la baja. {alerta_spread}."
-            confianza = "Alta"
-            recomendacion = "⚠️ VENDE / ESPERA - Exceso de oferta circulante en el libro"
-            puntaje = -7
-        else:
-            tendencia = "➡️ NEUTRAL / ESTABLE"
-            emoji = "🟡"
-            prediccion = f"Mercado en rango controlado y equilibrio dinámico. Flujo sin desequilibrios mayores en el promedio móvil. {alerta_spread}."
-            confianza = "Media"
-            recomendacion = "⏳ ESPERA - Rango plano controlado"
-            puntaje = 0
-
-        resultado = {
-            'precio_actual': precio_compra_ref if precio_compra_ref > 0 else (historial_ves[-1] if historial_ves else 0.0),
-            'cambio_10min': fuerza_suavizada,
-            'cambio_30min': fuerza_suavizada * 0.8,
-            'cambio_1id': fuerza_suavizada * 0.5,
-            'cambio_1hora': fuerza_suavizada * 0.5,
-            'cambio_2h': fuerza_suavizada * 0.2,
-            'promedio': vol_total / 2,
-            'volatilidad': spread_porcentaje,
-            'soporte': precio_compra_ref * 0.995,
-            'resistencia': precio_compra_ref * 1.005,
-            'momentum': delta_volumen / 1000000,
-            'rsi': 50 - (fuerza_suavizada / 2),
-            'puntaje': puntaje,
-            'tendencia': tendencia,
-            'emoji': emoji,
-            'prediccion': prediccion,
-            'confianza': confianza,
-            'recomendacion': recomendacion,
-            'muestras': len(historial_ves)
-        }
-
-        return resultado, None
-
-    except Exception as e:
-        return None, f"❌ Error en análisis de volumen: {str(e)}"
-
-# ==================== SISTEMA DE PREDICCIONES CON PRECISIÓN ====================
-
-def guardar_prediccion(analisis):
-    global historial_predicciones, estadisticas_predicciones
-
-    prediccion = {
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'precio_actual': analisis['precio_actual'],
-        'puntaje': analisis['puntaje'],
-        'tendencia': analisis['tendencia'],
-        'prediccion': analisis['prediccion'],
-        'recomendacion': analisis['recomendacion'],
-        'rsi': analisis['rsi'],
-        'momentum': analisis['momentum'],
-        'cambio_10min': analisis['cambio_10min'],
-        'verificada': False,
-        'acertada': False,
-        'precio_verificacion': None
-    }
-
-    historial_predicciones.append(prediccion)
-    estadisticas_predicciones['ultima_prediccion'] = prediccion
-    estadisticas_predicciones['total_predicciones'] += 1
-
-def verificar_predicciones():
-    global historial_predicciones, estadisticas_predicciones
-
-    if len(historial_predicciones) < 2:
-        return
-
-    compra_ves, venta_ves = obtener_precios_con_cache('VES')
-    if not compra_ves:
-        return
-
-    precio_actual = compra_ves
-
-    for prediccion in historial_predicciones:
-        if not prediccion['verificada']:
-            tiempo_prediccion = datetime.strptime(prediccion['timestamp'], '%Y-%m-%d %H:%M:%S')
-            tiempo_actual = datetime.now()
-            minutos_transcurridos = (tiempo_actual - tiempo_prediccion).total_seconds() / 60
-
-            if minutos_transcurridos >= 20:
-                precio_prediccion = prediccion['precio_actual']
-                cambio_real = ((precio_actual - precio_prediccion) / precio_prediccion) * 100
-
-                acertada = False
-                umbral_movimiento = 0.15
-
-                if 'ALCISTA' in prediccion['tendencia'] and cambio_real >= umbral_movimiento:
-                    acertada = True
-                elif 'BAJISTA' in prediccion['tendencia'] and cambio_real <= -umbral_movimiento:
-                    acertada = True
-                elif 'NEUTRAL' in prediccion['tendencia'] and abs(cambio_real) < umbral_movimiento:
-                    acertada = True
-
-                prediccion['verificada'] = True
-                prediccion['acertada'] = acertada
-                prediccion['precio_verificacion'] = precio_actual
-                prediccion['cambio_real'] = cambio_real
-
-                if acertada:
-                    estadisticas_predicciones['aciertos'] += 1
-                else:
-                    estadisticas_predicciones['fallos'] += 1
-
-                total = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
-                if total > 0:
-                    estadisticas_predicciones['precision'] = (estadisticas_predicciones['aciertos'] / total) * 100
-
-def obtener_estadisticas_precision():
-    global estadisticas_predicciones, historial_predicciones
-
-    total = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
-    res = list(historial_predicciones)[-10:] if len(historial_predicciones) > 0 else []
-
-    precision_alcista = 0
-    precision_bajista = 0
-    precision_neutral = 0
-    total_alcista = 0
-    total_bajista = 0
-    total_neutral = 0
-
-    for p in historial_predicciones:
-        if p['verificada']:
-            if 'ALCISTA' in p['tendencia']:
-                total_alcista += 1
-                if p['acertada']:
-                    precision_alcista += 1
-            elif 'BAJISTA' in p['tendencia']:
-                total_bajista += 1
-                if p['acertada']:
-                    precision_bajista += 1
-            elif 'NEUTRAL' in p['tendencia']:
-                total_neutral += 1
-                if p['acertada']:
-                    precision_neutral += 1
-
-    precision_alcista = (precision_alcista / total_alcista * 100) if total_alcista > 0 else 0
-    precision_bajista = (precision_bajista / total_bajista * 100) if total_bajista > 0 else 0
-    precision_neutral = (precision_neutral / total_neutral * 100) if total_neutral > 0 else 0
-
-    salida = {}
-    salida['total_predicciones'] = estadisticas_predicciones['total_predicciones']
-    salida['verificadas'] = estadisticas_predicciones['aciertos'] + estadisticas_predicciones['fallos']
-    salida['aciertos'] = estadisticas_predicciones['aciertos']
-    salida['fallos'] = estadisticas_predicciones['fallos']
-    salida['precision_general'] = estadisticas_predicciones['precision']
-    salida['precision_alcista'] = precision_alcista
-    salida['precision_bajista'] = precision_bajista
-    salida['precision_neutral'] = precision_neutral
-    salida['ultimas'] = res
-    
-    return salida
-
-def mostrar_historial_predicciones(chat_id):
-    stats = obtener_estadisticas_precision()
-
-    mensaje = f"""📊 *HISTORIAL DE PREDICCIONES*
-
-🎯 *Precisión del Bot:*
-• Total predicciones: {stats['total_predicciones']}
-• Verificadas: {stats['verificadas']}
-• ✅ Aciertos: {stats['aciertos']}
-• ❌ Fallos: {stats['fallos']}
-• 📈 Precisión general: {stats['precision_general']:.1f}%
-
-📊 *Precisión por tendencia:*
-• 📈 Alcistas: {stats['precision_alcista']:.1f}%
-• 📉 Bajistas: {stats['precision_bajista']:.1f}%
-• ➡️ Neutral: {stats['precision_neutral']:.1f}%
-
-📋 *Últimas 10 predicciones:*
-"""
-
-    if stats['ultimas']:
-        for i, p in enumerate(reversed(stats['ultimas']), 1):
-            emoji_estado = "✅" if p.get('acertada', False) else "❌" if p.get('verificada', False) else "⏳"
-            tendencia = p['tendencia'][:20]
-
-            if p.get('verificada', False):
-                cambio = f"{p.get('cambio_real', 0):+.2f}%"
-            else:
-                cambio = "⏳ Pendiente"
-
-            mensaje += f"\n{i}. {emoji_estado} {tendencia}... | {cambio}"
-
-    mensaje += f"""
-
-💡 *Recomendación:* { '✅ El bot está siendo preciso, confía en sus predicciones' if stats['precision_general'] > 60 else '⚠️ El bot está aprendiendo, toma las predicciones con precaución' }
-
-🕐 Última actualización: {datetime.now().strftime('%H:%M:%S')}
-"""
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-def mostrar_estadisticas_detalladas(chat_id):
-    stats = obtener_estadisticas_precision()
-
-    precision = stats['precision_general']
-    barras = "█" * int(precision / 5) + "░" * (20 - int(precision / 5))
-
-    mensaje = f"""📈 *ESTADÍSTICAS DETALLADAS*
-
-🎯 *Precisión General*
-[{barras}] {precision:.1f}%
-
-📊 *Distribución de Aciertos/Fallos*
-✅ Aciertos: {stats['aciertos']} ({'█' * int(stats['aciertos'] / max(stats['verificadas'], 1) * 20) if stats['verificadas'] > 0 else '░░░░░░░░░░░░░░░░░░░░'})
-❌ Fallos: {stats['fallos']} ({'█' * int(stats['fallos'] / max(stats['verificadas'], 1) * 20) if stats['verificadas'] > 0 else '░░░░░░░░░░░░░░░░░░░░'})
-
-📊 *Rendimiento por Tendencia*
-📈 Alcista:  {'▓' * int(stats['precision_alcista'] / 5)}{'░' * (20 - int(stats['precision_alcista'] / 5))} {stats['precision_alcista']:.1f}%
-📉 Bajista:  {'▓' * int(stats['precision_bajista'] / 5)}{'░' * (20 - int(stats['precision_bajista'] / 5))} {stats['precision_bajista']:.1f}%
-➡️ Neutral:  {'▓' * int(stats['precision_neutral'] / 5)}{'░' * (20 - int(stats['precision_neutral'] / 5))} {stats['precision_neutral']:.1f}%
-
-📋 *Resumen:*
-• Total predicciones: {stats['total_predicciones']}
-• Verificadas: {stats['verificadas']}
-• Ratio Acierto/Fallo: {stats['aciertos']}/{stats['fallos']}
-
-{'✅ El bot tiene buena precisión' if stats['precision_general'] > 65 else '📈 El bot está mejorando su precisión' if stats['precision_general'] > 50 else '⚠️ El bot necesita más datos para ser preciso'}
-
-🕐 {datetime.now().strftime('%H:%M:%S')}
-"""
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
 # ==================== ALERTAS DE PRECIO ====================
 
 def verificar_alertas(precios):
@@ -721,7 +416,7 @@ def mostrar_precios_usdt(chat_id):
         if compra and venta:
             precios[m] = {'compra': compra, 'venta': venta}
     if not precios:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_opciones(chat_id))
         return
 
     mensaje = f"💰 *PRECIOS USDT P2P*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
@@ -731,7 +426,7 @@ def mostrar_precios_usdt(chat_id):
         mensaje += f"  🔴 VENTA: {datos['venta']:.2f}\n"
         mensaje += f"  📊 Spread: {datos['compra']-datos['venta']:.2f}\n\n"
 
-    enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
 def mostrar_precio_individual(chat_id, moneda):
     compra, venta = obtener_precios_con_cache(moneda)
@@ -746,7 +441,7 @@ def mostrar_precio_individual(chat_id, moneda):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-# ==================== TETHER USDT VS BCV ====================
+# ==================== TETHER + BCV (ACTUALIZADO CON PRECIO VES) ====================
 
 def obtener_tasas_bcv():
     try:
@@ -782,11 +477,19 @@ def mostrar_tether_vs_bcv(chat_id):
     diff_compra = compra - bcv_con_porcentaje
     pct_compra = (diff_compra / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
 
-    mensaje = f"🪙 *TETHER USDT vs BCV (+0.50%)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    # Fusión solicitada: Tether + BCV integrado con la información de Precio VES en tiempo real
+    mensaje = f"🪙 *TETHER + BCV (+0.50%)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    
     mensaje += f"🏦 *BCV Oficial:* {tasas['usd']:.2f} Bs\n"
     mensaje += f"📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n"
-    mensaje += f"🟢 *COMPRA USDT VES:* {compra:.2f} Bs\n"
-    mensaje += f"  Diferencia vs BCV+0.50%: {diff_compra:+.2f} Bs\n"
+    
+    mensaje += f"🇻🇪 *PRECIO VES EN EL MOMENTO (Binance P2P):*\n"
+    mensaje += f"  🟢 COMPRA (Tasa): {compra:.2f} Bs\n"
+    mensaje += f"  🔴 VENTA: {venta:.2f} Bs\n"
+    mensaje += f"  📊 Spread: {compra-venta:.2f} Bs\n\n"
+    
+    mensaje += f"⚖️ *Diferencia vs BCV+0.50%:*\n"
+    mensaje += f"  Diferencia: {diff_compra:+.2f} Bs\n"
     mensaje += f"  Porcentaje: {pct_compra:+.1f}%\n"
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
@@ -841,6 +544,69 @@ Análisis financiero detallado basado en un capital de *${monto:,.2f} USD*:
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
+# ==================== CALCULO ¿CUÁNTO ES? (CONVERSIÓN DINÁMICA) ====================
+
+def calcular_conversion_bcv_medio(chat_id, texto_monto):
+    tasas = obtener_tasas_bcv()
+    if not tasas:
+        enviar_mensaje(chat_id, "⏳ No se pudo obtener la tasa BCV oficial en este momento.", crear_teclado_principal(chat_id))
+        return
+
+    bcv_mas_medio = tasas['usd'] * 1.005
+    texto_limpio = texto_monto.strip().lower()
+
+    try:
+        if 'bs' in texto_limpio:
+            # Entrada en Bolívares -> Dividir entre la tasa BCV + 0.50%
+            monto_str = texto_limpio.replace('bs', '').replace(',', '.').strip()
+            monto_bs = float(monto_str)
+            resultado_usd = monto_bs / bcv_mas_medio
+            
+            mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
+
+📊 *Tasa de Referencia:*
+• BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*
+
+━━━━━━━━━━━━━━━━━━━━
+✍️ *Operación (Bs ➔ $):*
+• Monto ingresado: *{monto_bs:,.2f} Bs*
+• Cálculo: Dividido entre tasa BCV + 0.50%
+
+💵 *Total equivalente:* *${resultado_usd:,.2f} USD*
+━━━━━━━━━━━━━━━━━━━━
+
+🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
+            enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+
+        elif '$' in texto_limpio or 'usd' in texto_limpio:
+            # Entrada en Dólares -> Multiplicar por la tasa BCV + 0.50%
+            monto_str = texto_limpio.replace('$', '').replace('usd', '').replace(',', '.').strip()
+            monto_usd = float(monto_str)
+            resultado_bs = monto_usd * bcv_mas_medio
+            
+            mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
+
+📊 *Tasa de Referencia:*
+• BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*
+
+━━━━━━━━━━━━━━━━━━━━
+✍️ *Operación ($ ➔ Bs):*
+• Monto ingresado: *${monto_usd:,.2f} USD*
+• Cálculo: Multiplicado por tasa BCV + 0.50%
+
+🇻🇪 *Total equivalente:* *{resultado_bs:,.2f} Bs*
+━━━━━━━━━━━━━━━━━━━━
+
+🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
+            enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+
+        else:
+            # Entrada numérica simple -> Pedir sufijo para poder diferenciar la operación
+            enviar_mensaje(chat_id, "⚠️ Por favor, especifica el tipo de moneda agregando *Bs* o *$* al final de la cantidad (ejemplo: `200000 Bs` o `100 $`).", crear_teclado_principal(chat_id))
+
+    except ValueError:
+        enviar_mensaje(chat_id, "❌ Error al leer la cantidad. Asegúrate de escribir solo números y añadir 'Bs' o '$' al final.", crear_teclado_principal(chat_id))
+
 # ==================== HISTORIAL VES ====================
 
 def mostrar_historial_ves(chat_id):
@@ -866,6 +632,8 @@ def mostrar_historial_ves(chat_id):
 # ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
+    global usuario_esperando_calculo
+    
     if not usuario_esta_en_grupo(chat_id):
         mensaje_bloqueo = (
             "❌ *Acceso Denegado*\n\n"
@@ -879,28 +647,34 @@ def procesar_mensaje(chat_id, texto):
     print(f"📩 {texto}")
     guardar_usuario(chat_id)
 
+    # Identificación rápida de conversiones directas con sufijos de moneda
+    if ('bs' in texto.lower() or '$' in texto or 'usd' in texto.lower()) and any(char.isdigit() for char in texto):
+        calcular_conversion_bcv_medio(chat_id, texto)
+        if chat_id in usuario_esperando_calculo:
+            del usuario_esperando_calculo[chat_id]
+        return
+
     if texto == '/start':
         mensaje = """
 Bienvenido a TetherPrueba
 
 Soy tu asistente diseñado para facilitarte la información sobre las tasas del momento de VES, COP y PEN del P2P de Binance.
 
-Herramientas disponibles:
-
-💰 Precio USDT → Todas las monedas
-🪙 Tether USDT vs BCV → Comparativa con tasa oficial
-📈 Historial de brecha VES → Últimas 24h
-
-🔔 Alertas automáticas:
-Activo por cambios en las tasas o por anomalías críticas en el Delta de Volumen P2P.
+Herramientas disponibles en los menús para consultas rápidas.
 """
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto == '💰 Precio USDT' or texto == '/precios':
-        mostrar_precios_usdt(chat_id)
-
-    elif texto == '🪙 Tether USDT vs BCV' or texto == '/tether':
+    elif texto == 'Tether + BCV' or texto == '/tether':
         mostrar_tether_vs_bcv(chat_id)
+
+    elif texto == '¿Cuánto es?':
+        usuario_esperando_calculo[chat_id] = True
+        mensaje = "✍️ *Calculadora de Conversión Dinámica (BCV + 0.50%)*\n\nEscribe directamente la cantidad y colócale *Bs* o *$* al final para que el bot multiplique o divida automáticamente.\n\nEjemplos:\n• `200000 Bs` (Dividirá entre la tasa)\n• `100 $` (Multiplicará por la tasa)"
+        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+
+    elif texto == '¿Cuánto Gané?' or texto == '/cuantogane':
+        mensaje = "✍️ *Calculadora de Ganancias Inteligente*\n\nPor favor, escribe directamente en el chat el monto en *USD* que deseas calcular (ejemplo: `50` o `150.50`) y te daré el desglose de tu ganancia al instante."
+        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
     elif texto == '📈 Historial de brecha VES' or texto == '/historial':
         mostrar_historial_ves(chat_id)
@@ -911,28 +685,31 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
         else:
             enviar_mensaje(chat_id, "❌ Solo el administrador puede usar este comando", crear_teclado_principal(chat_id))
 
-    elif texto == '📋 + Opciones':
-        mensaje = "📋 *+ OPCIONES*\n\nSelecciona una opción:"
+    elif texto == '+ Opciones':
+        mensaje = "📋 *OPCIONES SECUNDARIAS*\n\nSelecciona una opción del menú:"
         enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-    elif texto == '🔙 Volver al menú principal':
+    elif texto == 'Volver al menú principal':
         mensaje = "🏠 *Volviendo al menú principal*"
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto == '🇻🇪 Precio VES' or texto == '/ves':
+    elif texto == 'Precio USDT':
+        mostrar_precios_usdt(chat_id)
+
+    elif texto == 'Precio VES' or texto == '/ves':
         mostrar_precio_individual(chat_id, 'VES')
 
-    elif texto == '🇨🇴 Precio COP' or texto == '/cop':
+    elif texto == 'Precio COP' or texto == '/cop':
         mostrar_precio_individual(chat_id, 'COP')
 
-    elif texto == '🇵🇪 Precio PEN' or texto == '/pen':
+    elif texto == 'Precio PEN' or texto == '/pen':
         mostrar_precio_individual(chat_id, 'PEN')
 
-    elif texto == '👥 Usuarios Registrados' or texto == '/usuarios':
+    elif texto == 'Usuarios Registrados' or texto == '/usuarios':
         if chat_id == ADMIN_ID:
             usuarios = obtener_usuarios()
             if usuarios:
-                mensaje = f"👥 *SISTEMA AUTOMÁTIVO ACTIVO*\n\nTotal interactuando: {len(usuarios)}\n\nEl bot verifica accesos en tiempo real mediante Rose."
+                mensaje = f"👥 *SISTEMA AUTOMÁTICO ACTIVO*\n\nTotal interactuando: {len(usuarios)}\n\nEl bot verifica accesos en tiempo real mediante Rose."
                 for uid in usuarios:
                     mensaje += f"\n• `{uid}`"
             else:
@@ -941,20 +718,8 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
         else:
             enviar_mensaje(chat_id, "❌ Solo el administrador puede ver esto", crear_teclado_opciones(chat_id))
 
-    elif texto == '📊 Análisis Mercado' or texto == '/analisis':
-        mostrar_analisis_mercado(chat_id)
-
-    elif texto == '💰 ¿Cuánto Gané?' or texto == '/cuantogane':
-        mensaje = "✍️ *Calculadora Inteligente*\n\nPor favor, escribe directamente en el chat el monto en *USD* que deseas calcular (ejemplo: `50` o `150.50`) y te daré el desglose de tu ganancia al instante."
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-    elif texto == '📋 Historial Predicciones' or texto == '/historial_predicciones':
-        mostrar_historial_predicciones(chat_id)
-
-    elif texto == '📈 Estadísticas' or texto == '/estadisticas':
-        mostrar_estadisticas_detalladas(chat_id)
-
     else:
+        # Procesar valores numéricos sueltos (asume cálculo de ganancias de ¿Cuánto Gané?)
         try:
             monto_limpio = texto.replace(',', '.')
             monto_usuario = float(monto_limpio)
@@ -964,7 +729,7 @@ Activo por cambios en las tasas o por anomalías críticas en el Delta de Volume
             else:
                 enviar_mensaje(chat_id, "⚠️ El monto debe ser un número mayor a cero.", crear_teclado_principal(chat_id))
         except ValueError:
-            enviar_mensaje(chat_id, "Usa /start o selecciona una opción del menú.", crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, "Usa /start o selecciona una opción de los menús.", crear_teclado_principal(chat_id))
 
 # ==================== POLLING ====================
 
@@ -995,10 +760,10 @@ def recibir_mensajes():
             print(f"❌ Error polling: {e}")
             time.sleep(5)
 
-# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN (BLOQUE MODIFICADO) ====================
+# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS ====================
 
 def actualizar_precios():
-    global mantener_activo, ultimo_registro_prediccion, cache_precios, cache_tiempo, ultimo_delta_notificado
+    global mantener_activo, cache_precios, cache_tiempo, ultimos_precios
     
     while True:
         try:
@@ -1015,35 +780,9 @@ def actualizar_precios():
                         guardar_historial_ves(compra)
 
             if precios:
-                # 🔔 Mantiene activas las notificaciones normales de subida y bajada de precio
+                # Mantiene activas las notificaciones normales de subida y bajada de precios por umbral
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
-
-                analisis, err = analizar_tendencia_mercado('VES')
-                if analisis and not err:
-                    ahora = datetime.now()
-
-                    precio_actual = analisis['precio_actual']
-                    debe_guardar = False
-
-                    if estadisticas_predicciones['ultima_prediccion'] is None:
-                        debe_guardar = True
-                    else:
-                        precio_anterior = estadisticas_predicciones['ultima_prediccion']['precio_actual']
-                        if precio_anterior > 0:
-                            variacion_porcentaje = abs((precio_actual - precio_anterior) / precio_anterior) * 100
-                            if variacion_porcentaje >= 0.5:
-                                debe_guardar = True
-
-                    if debe_guardar:
-                        guardar_prediccion(analisis)
-                        ultimo_registro_prediccion = ahora
-                        print(f"🔮 Nueva predicción registrada por variación del 0.5% (Precio: {precio_actual:.2f}).")
-                    
-                    verificar_predicciones()
-
-                    # NOTA: Se ha removido el bloque automático que enviaba la alerta de desequilibrio cambiario al chat.
-                    # El análisis matemático sigue calculándose normalmente en segundo plano para consultas manuales.
 
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
                 print(f"  📊 Historial VES: {len(historial_ves)} muestras")
@@ -1072,36 +811,7 @@ def mantener_activo():
 
 @app.route('/')
 def home():
-    return f"✅ Bot activo 24/7\n🔒 Canal/Grupo Vinculado: {GRUPO_AUTORIZADO_ID}\n📊 {len(historial_ves)} muestras VES\n📊 {len(historial_predicciones)} predicciones\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
-
-# ==================== ANALISIS MERCADO ====================
-
-def mostrar_analisis_mercado(chat_id):
-    analisis, err = analizar_tendencia_mercado('VES')
-    
-    if err:
-        enviar_mensaje(chat_id, err, crear_teclado_opciones(chat_id))
-        return
-
-    mensaje = f"""📊 *ANÁLISIS CUANTITATIVO (ORDER FLOW P2P)*
-
-{analisis['emoji']} Sesgo del Mercado: {analisis['tendencia']}
-🕐 {datetime.now().strftime('%H:%M:%S')}
-📈 Precio Referencia: {analisis['precio_actual']:.2f} Bs
-
-📊 *Métricas de Flujo:*
-• Fuerza del Delta (Ratio): {analisis['cambio_10min']:+.2f}%
-• Presión Neta (Order Flow): {analisis['momentum']:+.3f}M
-• Volatilidad (Spread): {analisis['volatilidad']:.3f}%
-
-🔮 *Diagnóstico Macroeconómico:* {analisis['prediccion']}
-
-🎯 *Confianza Matemática:* {analisis['confianza']}
-💡 *Recomendación:* {analisis['recomendacion']}
-
-🔄 Análisis basado en profundidad de órdenes reales del P2P actual."""
-
-    enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+    return f"✅ Bot activo 24/7\n🔒 Canal/Grupo Vinculado: {GRUPO_AUTORIZADO_ID}\n📊 {len(historial_ves)} muestras VES\n🕐 Hora: {datetime.now().strftime('%H:%M:%S')} (Caracas)"
 
 # ==================== MAIN ====================
 
@@ -1128,7 +838,6 @@ if __name__ == "__main__":
             print(f"  ❌ {m}: No disponible")
 
     print(f"\n📊 Historial VES inicial: {len(historial_ves)} muestras")
-    print(f"📊 Sistema de predicciones cuantitativas inicializado")
 
     threading.Thread(target=recibir_mensajes, daemon=True).start()
     threading.Thread(target=actualizar_precios, daemon=True).start()

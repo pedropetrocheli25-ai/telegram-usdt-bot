@@ -610,7 +610,7 @@ def mostrar_historial_predicciones(chat_id):
 
     if stats['ultimas']:
         for i, p in enumerate(reversed(stats['ultimas']), 1):
-            estado = "✅" if p.get('acertada', False) else "❌" if p.get('verificada', False) else "⏳"
+            emoji_estado = "✅" if p.get('acertada', False) else "❌" if p.get('verificada', False) else "⏳"
             tendencia = p['tendencia'][:20]
 
             if p.get('verificada', False):
@@ -618,7 +618,7 @@ def mostrar_historial_predicciones(chat_id):
             else:
                 cambio = "⏳ Pendiente"
 
-            mensaje += f"\n{i}. {estado} {tendencia}... | {cambio}"
+            mensaje += f"\n{i}. {emoji_estado} {tendencia}... | {cambio}"
 
     mensaje += f"""
 
@@ -995,7 +995,7 @@ def recibir_mensajes():
             print(f"❌ Error polling: {e}")
             time.sleep(5)
 
-# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN ====================
+# ==================== ACTUALIZACIÓN CONTINUA Y ALERTAS DE VOLUMEN (BLOQUE MODIFICADO) ====================
 
 def actualizar_precios():
     global mantener_activo, ultimo_registro_prediccion, cache_precios, cache_tiempo, ultimo_delta_notificado
@@ -1015,6 +1015,7 @@ def actualizar_precios():
                         guardar_historial_ves(compra)
 
             if precios:
+                # 🔔 Mantiene activas las notificaciones normales de subida y bajada de precio
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
 
@@ -1041,35 +1042,8 @@ def actualizar_precios():
                     
                     verificar_predicciones()
 
-                    if analisis['puntaje'] in [7, -7]:
-                        delta_actual = analisis['cambio_10min']
-                        debe_notificar = False
-
-                        if ultimo_delta_notificado is None:
-                            debe_notificar = True
-                        else:
-                            if abs(delta_actual - ultimo_delta_notificado) >= 2.0:
-                                debe_notificar = True
-
-                        if debe_notificar:
-                            msg_alerta = f"🚨 *ALERTA DE DESEQUILIBRIO CAMBIARIO (P2P)* 🚨\n\n" \
-                                         f"🧭 *Sesgo del Mercado:* {analisis['tendencia']}\n" \
-                                         f"📊 *Ratio de Liquidez (Oferta/Demanda):* {delta_actual:+.1f}% " \
-                                         f"({'Exceso de Demanda' if delta_actual >= 0 else 'Exceso de Oferta'})\n\n" \
-                                         f"💡 *Diagnóstico Macroeconómico:*\n{analisis['prediccion']}\n\n" \
-                                         f"🕐 *Captura de Datos:* {datetime.now().strftime('%H:%M:%S')}"
-
-                            for usr in obtener_usuarios():
-                                try:
-                                    enviar_mensaje(usr, msg_alerta)
-                                    time.sleep(0.04)
-                                except:
-                                    pass
-                            
-                            ultimo_delta_notificado = delta_actual
-                            print(f"🔔 Alerta por movimiento >= 2% enviada. Delta base fijado en: {delta_actual:.2f}%")
-                        else:
-                            print(f"⏳ Cambio en Delta menor al 2% (Actual: {delta_actual:.1f}% | Último: {ultimo_delta_notificado:.1f}%). Omisión activa.")
+                    # NOTA: Se ha removido el bloque automático que enviaba la alerta de desequilibrio cambiario al chat.
+                    # El análisis matemático sigue calculándose normalmente en segundo plano para consultas manuales.
 
                 print(f"  ✅ VES: {precios.get('VES', {}).get('compra', 0):.2f}")
                 print(f"  📊 Historial VES: {len(historial_ves)} muestras")

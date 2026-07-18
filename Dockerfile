@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Instalar variables básicas y configurar la zona horaria del contenedor
+# Configurar la zona horaria de Venezuela para que los reportes de saldo y horas coincidan
 ENV TZ=America/Caracas
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
 COPY . .
 
-# Hugging Face Spaces requiere exponer el puerto 7860 obligatoriamente
+# Exponer el puerto por defecto para el servidor Flask
 ENV PORT=7860
 
 CMD ["python", "bot.py"]

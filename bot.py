@@ -484,7 +484,7 @@ def mostrar_tether_vs_bcv(chat_id):
     mensaje += f"📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n"
     
     mensaje += f"🇻🇪 *PRECIO VES EN EL MOMENTO (Binance P2P):*\n"
-    mensaje += f"  🟢 COMPRA (Tasa): {compra:.2f} Bs\n"
+    mensaje += f"  🟢 COMPRA: {compra:.2f} Bs\n"
     mensaje += f"  🔴 VENTA: {venta:.2f} Bs\n"
     mensaje += f"  📊 Spread: {compra-venta:.2f} Bs\n\n"
     

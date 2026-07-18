@@ -484,9 +484,9 @@ def mostrar_tether_vs_bcv(chat_id):
     mensaje += f"📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n"
     
     mensaje += f"🇻🇪 *PRECIO VES EN EL MOMENTO (Binance P2P):*\n"
-    mensaje += f"  🟢 COMPRA: {compra:.2f} Bs\n"
+    mensaje += f"  🟢 COMPRA (Tasa): {compra:.2f} Bs\n"
     mensaje += f"  🔴 VENTA: {venta:.2f} Bs\n"
-    
+    mensaje += f"  📊 Spread: {compra-venta:.2f} Bs\n\n"
     
     mensaje += f"⚖️ *Diferencia vs BCV+0.50%:*\n"
     mensaje += f"  Diferencia: {diff_compra:+.2f} Bs\n"
@@ -800,7 +800,8 @@ def actualizar_precios():
 def mantener_activo():
     while True:
         try:
-            url = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'localhost')}/"
+            # Modificado para usar tu dirección real de Render en lugar de Railway
+            url = "https://telegram-usdt-bot-vf5t.onrender.com/"
             requests.get(url, timeout=10)
             print(f"💓 Keep alive: {datetime.now().strftime('%H:%M:%S')}")
         except:
@@ -816,7 +817,7 @@ def home():
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
-    print("🚀 Bot iniciando en Railway...")
+    print("🚀 Bot iniciando en Render...")
     print(f"✅ TOKEN: {'Configurado' if TOKEN else 'FALTANTE'}")
     print(f"✅ ADMIN_ID: {ADMIN_ID if ADMIN_ID else 'FALTANTE'}")
     print(f"🔒 ID GRUPO VINCULADO: {GRUPO_AUTORIZADO_ID}")
@@ -846,5 +847,6 @@ if __name__ == "__main__":
     print("\n✅ Bot listo!")
     print("=" * 40)
 
+    # Render asigna el puerto mediante variable de entorno, dejamos 8080 como respaldo
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

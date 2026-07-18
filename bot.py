@@ -71,9 +71,9 @@ usuario_esperando_calculo = {}
 def crear_teclado_principal(chat_id):
     """Genera el menú de inicio con la nueva estructura de botones solicitada"""
     teclado = [
-        ["🪙Tether + BCV"],
-        ["‼️¿Cuánto es?"],
-        ["✅¿Cuánto Gané?"],
+        ["Tether + BCV"],
+        ["¿Cuánto es?"],
+        ["¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
 
@@ -88,10 +88,10 @@ def crear_teclado_principal(chat_id):
 def crear_teclado_opciones(chat_id):
     """Genera el menú de opciones secundarias con la nueva estructura solicitada"""
     teclado = [
-        ["💹Precio USDT"],
-        ["🇻🇪Precio VES"],
-        ["🇨🇴Precio COP"],
-        ["🇵🇪Precio PEN"]
+        ["Precio USDT"],
+        ["Precio VES"],
+        ["Precio COP"],
+        ["Precio PEN"]
     ]
 
     if chat_id == ADMIN_ID:

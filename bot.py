@@ -63,16 +63,17 @@ historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
 
 # ==================== ESTADOS DE ENTRADA DE USUARIOS ====================
+# Guardará temporalmente si el usuario está esperando ingresar un monto para conversión
 usuario_esperando_calculo = {} 
 
 # ==================== FUNCIONES BASE DE TELEGRAM ====================
 
 def crear_teclado_principal(chat_id):
-    """Genera el menú de inicio con la nueva estructura de botones y emojis asignados"""
+    """Genera el menú de inicio con la nueva estructura de botones solicitada"""
     teclado = [
-        ["🪙 Tether + BCV"],
-        ["⚖️ ¿Cuánto es?"],
-        ["💵 ¿Cuánto Gané?"],
+        ["Tether + BCV"],
+        ["¿Cuánto es?"],
+        ["¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
 
@@ -80,23 +81,23 @@ def crear_teclado_principal(chat_id):
     if chat_id == ADMIN_ID:
         teclado.append(["🏦 Tasas de Cambio"])
 
-    teclado.append(["➕ Opciones"])
+    teclado.append(["+ Opciones"])
 
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_opciones(chat_id):
-    """Genera el menú de opciones secundarias con emojis y banderas correspondientes"""
+    """Genera el menú de opciones secundarias con la nueva estructura solicitada"""
     teclado = [
-        ["💵 Precio USDT"],
-        ["🇻🇪 Precio VES"],
-        ["🇨🇴 Precio COP"],
-        ["🇵🇪 Precio PEN"]
+        ["Precio USDT"],
+        ["Precio VES"],
+        ["Precio COP"],
+        ["Precio PEN"]
     ]
 
     if chat_id == ADMIN_ID:
-        teclado.append(["👥 Usuarios Registrados"])
+        teclado.append(["Usuarios Registrados"])
 
-    teclado.append(["🏠 Volver al menú principal"])
+    teclado.append(["Volver al menú principal"])
 
     return {"keyboard": teclado, "resize_keyboard": True}
 
@@ -429,9 +430,7 @@ def mostrar_precios_usdt(chat_id):
 
 def mostrar_precio_individual(chat_id, moneda):
     compra, venta = obtener_precios_con_cache(moneda)
-    if not delete_cache_item := (not compra or not venta):
-        pass
-    else:
+    if not compra or not venta:
         enviar_mensaje(chat_id, f"⏳ Obteniendo precio {moneda}...", crear_teclado_opciones(chat_id))
         return
 
@@ -442,7 +441,7 @@ def mostrar_precio_individual(chat_id, moneda):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-# ==================== TETHER + BCV ====================
+# ==================== TETHER + BCV (ACTUALIZADO CON PRECIO VES) ====================
 
 def obtener_tasas_bcv():
     try:
@@ -478,6 +477,7 @@ def mostrar_tether_vs_bcv(chat_id):
     diff_compra = compra - bcv_con_porcentaje
     pct_compra = (diff_compra / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
 
+    # Fusión solicitada: Tether + BCV integrado con la información de Precio VES en tiempo real
     mensaje = f"🪙 *TETHER + BCV (+0.50%)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
     
     mensaje += f"🏦 *BCV Oficial:* {tasas['usd']:.2f} Bs\n"
@@ -507,8 +507,8 @@ def calcular_ganancia_neta(chat_id, monto=100.0):
     bcv_mas_medio = tasas['usd'] * 1.005
     costo_bcv_monto = bcv_mas_medio * monto
 
-    usdt_neto_tarjeta = monto * (1 - 0.015)
-    usdt_final = usdt_neto_tarjeta * (1 - 0.041)
+    usdt_neto_tarjeta = monto * (1 - 0.015)  # Resta el 1.5% de la tarjeta
+    usdt_final = usdt_neto_tarjeta * (1 - 0.041)  # Resta el 4.1% de Bpay
 
     retorno_ves = usdt_final * venta_ves
 
@@ -544,7 +544,7 @@ Análisis financiero detallado basado en un capital de *${monto:,.2f} USD*:
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== CALCULO ¿CUÁNTO ES? ====================
+# ==================== CALCULO ¿CUÁNTO ES? (CONVERSIÓN DINÁMICA) ====================
 
 def calcular_conversion_bcv_medio(chat_id, texto_monto):
     tasas = obtener_tasas_bcv()
@@ -557,6 +557,7 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
 
     try:
         if 'bs' in texto_limpio:
+            # Entrada en Bolívares -> Dividir entre la tasa BCV + 0.50%
             monto_str = texto_limpio.replace('bs', '').replace(',', '.').strip()
             monto_bs = float(monto_str)
             resultado_usd = monto_bs / bcv_mas_medio
@@ -578,6 +579,7 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
         elif '$' in texto_limpio or 'usd' in texto_limpio:
+            # Entrada en Dólares -> Multiplicar por la tasa BCV + 0.50%
             monto_str = texto_limpio.replace('$', '').replace('usd', '').replace(',', '.').strip()
             monto_usd = float(monto_str)
             resultado_bs = monto_usd * bcv_mas_medio
@@ -599,6 +601,7 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
         else:
+            # Entrada numérica simple -> Pedir sufijo para poder diferenciar la operación
             enviar_mensaje(chat_id, "⚠️ Por favor, especifica el tipo de moneda agregando *Bs* o *$* al final de la cantidad (ejemplo: `200000 Bs` o `100 $`).", crear_teclado_principal(chat_id))
 
     except ValueError:
@@ -644,6 +647,7 @@ def procesar_mensaje(chat_id, texto):
     print(f"📩 {texto}")
     guardar_usuario(chat_id)
 
+    # Identificación rápida de conversiones directas con sufijos de moneda
     if ('bs' in texto.lower() or '$' in texto or 'usd' in texto.lower()) and any(char.isdigit() for char in texto):
         calcular_conversion_bcv_medio(chat_id, texto)
         if chat_id in usuario_esperando_calculo:
@@ -656,52 +660,52 @@ Bienvenido a TetherPrueba
 
 Soy tu asistente diseñado para facilitarte la información sobre las tasas del momento de VES, COP y PEN del P2P de Binance.
 
-Herramientas disponibles en los menús para consultas快速.
+Herramientas disponibles en los menús para consultas rápidas.
 """
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto in ['Tether + BCV', '🪙 Tether + BCV', '/tether']:
+    elif texto == 'Tether + BCV' or texto == '/tether':
         mostrar_tether_vs_bcv(chat_id)
 
-    elif texto in ['¿Cuánto es?', '⚖️ ¿Cuánto es?']:
+    elif texto == '¿Cuánto es?':
         usuario_esperando_calculo[chat_id] = True
         mensaje = "✍️ *Calculadora de Conversión Dinámica (BCV + 0.50%)*\n\nEscribe directamente la cantidad y colócale *Bs* o *$* al final para que el bot multiplique o divida automáticamente.\n\nEjemplos:\n• `200000 Bs` (Dividirá entre la tasa)\n• `100 $` (Multiplicará por la tasa)"
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto in ['¿Cuánto Gané?', '💵 ¿Cuánto Gané?', '/cuantogane']:
+    elif texto == '¿Cuánto Gané?' or texto == '/cuantogane':
         mensaje = "✍️ *Calculadora de Ganancias Inteligente*\n\nPor favor, escribe directamente en el chat el monto en *USD* que deseas calcular (ejemplo: `50` o `150.50`) y te daré el desglose de tu ganancia al instante."
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto in ['📈 Historial de brecha VES', '/historial']:
+    elif texto == '📈 Historial de brecha VES' or texto == '/historial':
         mostrar_historial_ves(chat_id)
 
-    elif texto in ['🏦 Tasas de Cambio', '/tasas']:
+    elif texto == '🏦 Tasas de Cambio' or texto == '/tasas':
         if chat_id == ADMIN_ID:
             mostrar_tasas_cambio(chat_id)
         else:
             enviar_mensaje(chat_id, "❌ Solo el administrador puede usar este comando", crear_teclado_principal(chat_id))
 
-    elif texto in ['+ Opciones', '➕ Opciones']:
+    elif texto == '+ Opciones':
         mensaje = "📋 *OPCIONES SECUNDARIAS*\n\nSelecciona una opción del menú:"
         enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-    elif texto in ['Volver al menú principal', '🏠 Volver al menú principal']:
+    elif texto == 'Volver al menú principal':
         mensaje = "🏠 *Volviendo al menú principal*"
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto in ['Precio USDT', '💵 Precio USDT']:
+    elif texto == 'Precio USDT':
         mostrar_precios_usdt(chat_id)
 
-    elif texto in ['Precio VES', '🇻🇪 Precio VES', '/ves']:
+    elif texto == 'Precio VES' or texto == '/ves':
         mostrar_precio_individual(chat_id, 'VES')
 
-    elif texto in ['Precio COP', '🇨🇴 Precio COP', '/cop']:
+    elif texto == 'Precio COP' or texto == '/cop':
         mostrar_precio_individual(chat_id, 'COP')
 
-    elif texto in ['Precio PEN', '🇵🇪 Precio PEN', '/pen']:
+    elif texto == 'Precio PEN' or texto == '/pen':
         mostrar_precio_individual(chat_id, 'PEN')
 
-    elif texto in ['Usuarios Registrados', '👥 Usuarios Registrados', '/usuarios']:
+    elif texto == 'Usuarios Registrados' or texto == '/usuarios':
         if chat_id == ADMIN_ID:
             usuarios = obtener_usuarios()
             if usuarios:
@@ -715,6 +719,7 @@ Herramientas disponibles en los menús para consultas快速.
             enviar_mensaje(chat_id, "❌ Solo el administrador puede ver esto", crear_teclado_opciones(chat_id))
 
     else:
+        # Procesar valores numéricos sueltos (asume cálculo de ganancias de ¿Cuánto Gané?)
         try:
             monto_limpio = texto.replace(',', '.')
             monto_usuario = float(monto_limpio)
@@ -775,6 +780,7 @@ def actualizar_precios():
                         guardar_historial_ves(compra)
 
             if precios:
+                # Mantiene activas las notificaciones normales de subida y bajada de precios por umbral
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
 
@@ -823,8 +829,7 @@ if __name__ == "__main__":
         compra, venta = obtener_precios_p2p_reales(m)
         if compra and venta:
             print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
-            order_price = compra
-            ultimos_precios[m] = order_price
+            ultimos_precios[m] = compra
             cache_precios[m] = {'compra': compra, 'venta': venta}
             cache_tiempo[m] = time.time()
             if m == 'VES':

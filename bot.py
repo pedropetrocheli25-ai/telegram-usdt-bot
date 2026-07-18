@@ -30,8 +30,8 @@ app = Flask(__name__)
 # ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {
     'VES': 1.0,    # 1.00 VES neto
-    'COP': 100.0,  # 100.00 COP neto
-    'PEN': 0.10    # 0.10 PEN neto
+    'COP': 50.0,  # 50.00 COP neto
+    'PEN': 0.05    # 0.05 PEN neto
 }
 
 FLUCTUACION_UMBRAL = 0.8
@@ -71,9 +71,9 @@ usuario_esperando_calculo = {}
 def crear_teclado_principal(chat_id):
     """Genera el menú de inicio con la nueva estructura de botones solicitada"""
     teclado = [
-        ["Tether + BCV"],
-        ["¿Cuánto es?"],
-        ["¿Cuánto Gané?"],
+        ["🪙Tether + BCV"],
+        ["‼️¿Cuánto es?"],
+        ["✅¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
 
@@ -88,10 +88,10 @@ def crear_teclado_principal(chat_id):
 def crear_teclado_opciones(chat_id):
     """Genera el menú de opciones secundarias con la nueva estructura solicitada"""
     teclado = [
-        ["Precio USDT"],
-        ["Precio VES"],
-        ["Precio COP"],
-        ["Precio PEN"]
+        ["💹Precio USDT"],
+        ["🇻🇪Precio VES"],
+        ["🇨🇴Precio COP"],
+        ["🇵🇪Precio PEN"]
     ]
 
     if chat_id == ADMIN_ID:
@@ -487,6 +487,7 @@ def mostrar_tether_vs_bcv(chat_id):
     mensaje += f"  🟢 COMPRA: {compra:.2f} Bs\n"
     mensaje += f"  🔴 VENTA: {venta:.2f} Bs\n"
     
+
     mensaje += f"⚖️ *Diferencia vs BCV+0.50%:*\n"
     mensaje += f"  Diferencia: {diff_compra:+.2f} Bs\n"
     mensaje += f"  Porcentaje: {pct_compra:+.1f}%\n"

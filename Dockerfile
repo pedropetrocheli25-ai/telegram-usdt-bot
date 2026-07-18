@@ -13,6 +13,6 @@ RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 COPY . .
 
 # Exponer el puerto por defecto para el servidor Flask
-ENV PORT=7860
+ENV PORT=8080
 
 CMD ["python", "bot.py"]

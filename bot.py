@@ -202,7 +202,8 @@ def mostrar_tarifario_usd(chat_id):
     tabla += f"{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
     tabla += f"---------------------------------\n"
     
-    montos_usd = [5, 10, 20, 30, 40, 50, 100, 200, 500]
+    # Montos actualizados según tu solicitud
+    montos_usd = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
     
     for usd in montos_usd:
         recibes_bs = usd * tasa_bcv
@@ -226,7 +227,8 @@ def mostrar_tarifario_soles(chat_id):
     tabla += f"{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
     tabla += f"---------------------------------\n"
     
-    montos_soles = [10, 20, 50, 100, 200, 500, 1000]
+    # Montos actualizados según tu solicitud
+    montos_soles = [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
     
     for soles in montos_soles:
         recibes_bs = soles * TASA_SOLES_TARIFARIO

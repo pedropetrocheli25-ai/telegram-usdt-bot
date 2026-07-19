@@ -67,6 +67,7 @@ precio_apertura_ves = None
 
 # ==================== ESTADOS DE ENTRADA DE USUARIOS ====================
 usuario_esperando_calculo = {} 
+usuario_esperando_cruzado = {}  # Nuevo estado para el botón de tasa cruzada
 usuario_configurando_soles = {}  # Estado específico para que no interfiera con otros cálculos
 
 # ==================== FUNCIONES BASE DE TELEGRAM ====================
@@ -75,7 +76,8 @@ def crear_teclado_principal(chat_id):
     """Genera el menú de inicio con la nueva estructura de botones solicitada"""
     teclado = [
         ["Tether + BCV"],
-        ["¿Cuánto es?", "¿Cuánto Gané?"],
+        ["¿Cuánto es?", "¿Cuánto es Cruzado?"],  # Añadido el nuevo botón en conjunto
+        ["¿Cuánto Gané?"],
         ["📋 Tarifario USD", "📋 Tarifario Soles"],
         ["📈 Historial de brecha VES"]
     ]
@@ -602,19 +604,76 @@ Análisis financiero detallado basado en un capital de *${monto:,.2f} USD*:
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== CALCULO ¿CUÁNTO ES? MODIFICADO Y AMPLIADO ====================
+# ==================== BOTÓN ORIGINAL: ¿CUÁNTO ES? RESTAURADO ====================
 
 def calcular_conversion_bcv_medio(chat_id, texto_monto):
+    """Lógica original intacta: Calcula de forma estándar basándose en la tasa BCV + 0.50%"""
+    tasas = obtener_tasas_bcv()
+    if not tasas:
+        enviar_mensaje(chat_id, "⏳ No se pudo obtener la tasa BCV oficial en este momento.", crear_teclado_principal(chat_id))
+        return
+
+    bcv_mas_medio = tasas['usd'] * 1.005
+    texto_limpio = texto_monto.strip().lower()
+
+    try:
+        if 'bs' in texto_limpio:
+            monto_str = texto_limpio.replace('bs', '').replace(',', '.').strip()
+            monto_bs = float(monto_str)
+            resultado_usd = monto_bs / bcv_mas_medio
+            
+            mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
+
+📊 *Tasa de Referencia:*
+• BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*
+
+━━━━━━━━━━━━━━━━━━━━
+✍️ *Operación (Bs ➔ $):*
+• Monto ingresado: *{monto_bs:,.2f} Bs*
+• Cálculo: Dividido por tasa BCV + 0.50%
+
+🇺🇸 *Total equivalente:* *${resultado_usd:,.2f} USD*
+━━━━━━━━━━━━━━━━━━━━
+🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
+            enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+
+        elif '$' in texto_limpio or 'usd' in texto_limpio:
+            monto_str = texto_limpio.replace('$', '').replace('usd', '').replace(',', '.').strip()
+            monto_usd = float(monto_str)
+            resultado_bs = monto_usd * bcv_mas_medio
+            
+            mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
+
+📊 *Tasa de Referencia:*
+• BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*
+
+━━━━━━━━━━━━━━━━━━━━
+✍️ *Operación ($ ➔ Bs):*
+• Monto ingresado: *${monto_usd:,.2f} USD*
+• Cálculo: Multiplicado por tasa BCV + 0.50%
+
+🇻🇪 *Total equivalente:* *{resultado_bs:,.2f} Bs*
+━━━━━━━━━━━━━━━━━━━━
+🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
+            enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+        else:
+            enviar_mensaje(chat_id, "⚠️ Por favor, especifica la moneda añadiendo *Bs* o *$* al final de la cantidad (ejemplo: `25000 Bs` o `100 $`).", crear_teclado_principal(chat_id))
+
+    except ValueError:
+        enviar_mensaje(chat_id, "❌ Error al leer la cantidad. Asegúrate de escribir solo números y añadir el identificador al final.", crear_teclado_principal(chat_id))
+
+# ==================== BOTÓN NUEVO: ¿CUÁNTO ES CRUZADO? ====================
+
+def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
+    """Nueva función independiente para procesar los cálculos avanzados solicitados"""
     tasas = obtener_tasas_bcv()
     if not tasas:
         enviar_mensaje(chat_id, "⏳ No se pudo obtener la tasa BCV oficial en este momento.", crear_teclado_principal(chat_id))
         return
 
     tasa_bcv = tasas['usd']
-    bcv_mas_medio = tasa_bcv * 1.005
     texto_limpio = texto_monto.strip().lower()
 
-    # Cargar Tasas Cruzadas para los cálculos avanzados de Soles/Bolívares
     tasas_cruzadas = calcular_tasas_cruzadas()
     tasa_peru_ven = tasas_cruzadas['Perú → Venezuela'] if tasas_cruzadas else 250.00
     tasa_ven_peru = tasas_cruzadas['Venezuela → Perú'] if tasas_cruzadas else 265.00
@@ -629,7 +688,7 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
             resultado_bs_pv = monto_soles * tasa_peru_ven
             resultado_usd_pv = resultado_bs_pv / tasa_bcv
 
-            # 2. Entrada de Soles simulando salida (Venezuela → Perú)
+            # 2. Entrada de Soles usando Venezuela → Perú
             resultado_bs_vp = monto_soles * tasa_ven_peru
             resultado_usd_vp = resultado_bs_vp / tasa_bcv
 
@@ -652,58 +711,29 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
         elif 'bs' in texto_limpio:
             monto_str = texto_limpio.replace('bs', '').replace(',', '.').strip()
             monto_bs = float(monto_str)
-            
-            # Cálculo estándar BCV+0.50%
-            resultado_usd_std = monto_bs / bcv_mas_medio
 
-            # Cálculos avanzados usando tasas cruzadas y BCV solicitados
             resultado_usd_bcv = monto_bs / tasa_bcv
             resultado_soles_pv = monto_bs / tasa_peru_ven
             resultado_soles_vp = monto_bs / tasa_ven_peru
 
-            mensaje = f"""⚖️ *CALCULADORA MULTI-CONVERSIÓN*
+            mensaje = f"""⚖️ *CALCULADORA DE TASAS CRUZADAS*
 
-*Tasa BCV:* {tasa_bcv:.2f} Bs | *BCV + 0.50%:* {bcv_mas_medio:.2f} Bs
+*Tasa BCV:* {tasa_bcv:.2f} Bs
 *Tasa Perú → Venezuela:* {tasa_peru_ven:.2f} | *Tasa Venezuela → Perú:* {tasa_ven_peru:.2f}
 ━━━━━━━━━━━━━━━━━━━━
-✍️ *Conversión Estándar:*
-• {monto_bs:,.2f} Bs ➔ *${resultado_usd_std:,.2f} USD* (A tasa BCV + 0.50%)
-
 🇵🇪 ➔ 🇻🇪 *Fórmula Perú → Venezuela:*
 • {monto_bs:,.2f} Bs, *${resultado_usd_bcv:,.2f}$* a tasa BCV, son *{resultado_soles_pv:,.2f} Soles*
 
 🇻🇪 ➔ 🇵🇪 *Fórmula Venezuela → Perú:*
-• Por {monto_bs:,.2f} Bs  equivalente a *${resultado_usd_bcv:,.2f} $* (tasa BCV), llegan *{resultado_soles_vp:,.2f} Soles*
+• Por {monto_bs:,.2f} Bs equivalente a *${resultado_usd_bcv:,.2f}$* a tasa BCV, llegan *{resultado_soles_vp:,.2f} Soles*
 ━━━━━━━━━━━━━━━━━━━━
 🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-        # --- FLUJO CON DÓLARES ($ o usd) ---
-        elif '$' in texto_limpio or 'usd' in texto_limpio:
-            monto_str = texto_limpio.replace('$', '').replace('usd', '').replace(',', '.').strip()
-            monto_usd = float(monto_str)
-            resultado_bs = monto_usd * bcv_mas_medio
-            
-            mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
-
-📊 *Tasa de Referencia:*
-• BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*
-
-━━━━━━━━━━━━━━━━━━━━
-✍️ *Operación ($ ➔ Bs):*
-• Monto ingresado: *${monto_usd:,.2f} USD*
-• Cálculo: Multiplicado por tasa BCV + 0.50%
-
-🇻🇪 *Total equivalente:* *{resultado_bs:,.2f} Bs*
-━━━━━━━━━━━━━━━━━━━━
-🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
-            enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
         else:
-            enviar_mensaje(chat_id, "⚠️ Por favor, especifica el tipo de moneda añadiendo *Bs*, *S/* o *$* al final de la cantidad (ejemplo: `100 S/`, `200000 Bs` o `100 $`).", crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, "⚠️ Para cálculos cruzados indica la cantidad añadiendo *S/* o *Bs* al final (ejemplo: `100 S/` o `25000 Bs`).", crear_teclado_principal(chat_id))
 
     except ValueError:
-        enviar_mensaje(chat_id, "❌ Error al leer la cantidad. Asegúrate de escribir solo números y añadir su identificador al final.", crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "❌ Error al realizar la conversión cruzada. Verifica la cantidad escrita.", crear_teclado_principal(chat_id))
 
 # ==================== HISTORIAL VES ====================
 
@@ -730,7 +760,7 @@ def mostrar_historial_ves(chat_id):
 # ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
-    global usuario_esperando_calculo, usuario_configurando_soles
+    global usuario_esperando_calculo, usuario_esperando_cruzado, usuario_configurando_soles
     global TASA_SOLES_TARIFARIO
     
     if not usuario_esta_en_grupo(chat_id):
@@ -757,12 +787,16 @@ def procesar_mensaje(chat_id, texto):
         except ValueError:
             pass  
 
-    # Identificación rápida de conversiones directas con sufijos de moneda
-    if ('bs' in texto.lower() or '$' in texto or 'usd' in texto.lower() or 's/' in texto.lower() or 'soles' in texto.lower()) and any(char.isdigit() for char in texto):
-        calcular_conversion_bcv_medio(chat_id, texto)
-        if chat_id in usuario_esperando_calculo:
-            del usuario_esperando_calculo[chat_id]
-        return
+    # Enrutamiento inteligente basado en los estados activos de los botones
+    if any(char.isdigit() for char in texto):
+        if usuario_esperando_cruzado.get(chat_id) or 's/' in texto.lower() or 'soles' in texto.lower():
+            calcular_conversion_tasas_cruzadas(chat_id, texto)
+            usuario_esperando_cruzado[chat_id] = False
+            return
+        elif usuario_esperando_calculo.get(chat_id) or 'bs' in texto.lower() or '$' in texto or 'usd' in texto.lower():
+            calcular_conversion_bcv_medio(chat_id, texto)
+            usuario_esperando_calculo[chat_id] = False
+            return
 
     if texto == '/start':
         usuario_configurando_soles[chat_id] = False
@@ -798,8 +832,16 @@ Herramientas disponibles en los menús para consultas rápidas.
 
     elif texto == '¿Cuánto es?':
         usuario_configurando_soles[chat_id] = False
+        usuario_esperando_cruzado[chat_id] = False
         usuario_esperando_calculo[chat_id] = True
-        mensaje = "✍️ *Calculadora de Conversión Dinámica Avanzada*\n\nEscribe directamente la cantidad y su moneda al final para realizar las operaciones automáticas de Tasas Cruzadas y BCV.\n\nEjemplos:\n• `100 S/` o `100 Soles` (Calcula Soles a Bs y su equivalente en $)\n• `25000 Bs` (Desglosa cálculos en Soles a Tasa P→V, V→P y dólares)\n• `100 $` (Multiplicará estándar por BCV + 0.50%)"
+        mensaje = "✍️ *Calculadora Estándar BCV*\n\nEscribe directamente la cantidad seguida de *Bs* o *$* para convertir usando la tasa BCV + 0.50%.\n\nEjemplos:\n• `25000 Bs`\n• `100 $`"
+        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+
+    elif texto == '¿Cuánto es Cruzado?':
+        usuario_configurando_soles[chat_id] = False
+        usuario_esperando_calculo[chat_id] = False
+        usuario_esperando_cruzado[chat_id] = True
+        mensaje = "✍️ *Calculadora de Tasas Cruzadas Avanzada*\n\nEscribe directamente la cantidad que deseas procesar seguida de su moneda (*S/* o *Bs*).\n\nEjemplos:\n• `100 S/` o `100 Soles` (Calcula Soles enviados y recibidos simulados)\n• `25000 Bs` (Desglosa cálculos cruzados a Soles y dólares BCV)"
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
     elif texto == '¿Cuánto Gané?' or texto == '/cuantogane':

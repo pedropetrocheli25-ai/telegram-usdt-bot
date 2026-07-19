@@ -28,7 +28,7 @@ ultimo_update_id = 0
 app = Flask(__name__)
 
 # ==================== TASAS PARA TARIFARIOS ====================
-# Tasa Soles sigue siendo manual. La de BCV ahora se calcula de la API automáticamente.
+# Tasa Soles se configura escribiendo el número directo en el chat. BCV es automática de la API.
 TASA_SOLES_TARIFARIO = 3.80
 
 # ==================== ALERTAS DE PRECIO FINANCIERO ====================
@@ -68,7 +68,6 @@ precio_apertura_ves = None
 
 # ==================== ESTADOS DE ENTRADA DE USUARIOS ====================
 usuario_esperando_calculo = {} 
-usuario_esperando_tasa_soles = {}
 
 # ==================== FUNCIONES BASE DE TELEGRAM ====================
 
@@ -186,7 +185,7 @@ def obtener_precios_p2p_reales(fiat):
     except:
         return None, None
 
-# ==================== GENERADOR DE TARIFARIOS MONOESPACIADOS ====================
+# ==================== GENERADOR DE TARIFARIOS CORREGIDOS ====================
 
 def obtener_tasa_bcv_actual():
     """Función de ayuda para extraer la tasa BCV en tiempo real de la API instalada"""
@@ -196,24 +195,25 @@ def obtener_tasa_bcv_actual():
     return 45.00 # Respaldo por si la API falla un segundo
 
 def mostrar_tarifario_usd(chat_id):
-    """Genera la tabla de Tarifario en USD con alineación de ancho fijo exacta"""
+    """Genera la tabla de Tarifario en USD con la fórmula matemática corregida"""
     tasa_bcv = obtener_tasa_bcv_actual()
     mensaje = f"📋 *TARIFARIO EN USD REAL*\n"
-    mensaje += f"🕐 Tasa BCV (API): {tasa_bcv:.2f} Bs | Soles: {TASA_SOLES_TARIFARIO:.2f}\n\n"
+    mensaje += f"🕐 Tasa BCV (API): {tasa_bcv:.2f} Bs | Soles Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
     
     tabla = f"```\n"
     tabla += f"{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
-    tabla += f"-------- text-separator ---------\n"
+    tabla += f"---------------------------------\n"
     
     montos_usd = [5, 10, 20, 30, 40, 50, 100, 200, 500]
     
     for usd in montos_usd:
         recibes_bs = usd * tasa_bcv
-        equiv_soles = usd * TASA_SOLES_TARIFARIO
+        # FÓRMULA CORREGIDA: (USD * Tasa BCV) / Tasa Configurada Soles
+        equiv_soles = recibes_bs / TASA_SOLES_TARIFARIO if TASA_SOLES_TARIFARIO > 0 else 0
         
         col_usd = f"{usd}$".ljust(9)
         col_bs = f"{recibes_bs:,.2f}".ljust(14)
-        col_soles = f"{equiv_soles:,.2f} S".ljust(12)
+        col_soles = f"{equiv_soles:,.2f} S/".ljust(12)
         
         tabla += f"{col_usd}|{col_bs}|{col_soles}\n"
         
@@ -221,22 +221,24 @@ def mostrar_tarifario_usd(chat_id):
     enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_principal(chat_id))
 
 def mostrar_tarifario_soles(chat_id):
-    """Genera la tabla de Tarifario en Soles con alineación de ancho fijo exacta"""
+    """Genera la tabla de Tarifario en Soles con la fórmula matemática corregida"""
     tasa_bcv = obtener_tasa_bcv_actual()
     mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n"
-    mensaje += f"🕐 Tasa BCV (API): {tasa_bcv:.2f} Bs | Soles: {TASA_SOLES_TARIFARIO:.2f}\n\n"
+    mensaje += f"🕐 Tasa BCV (API): {tasa_bcv:.2f} Bs | Soles Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
     
     tabla = f"```\n"
-    tabla += f"{'Envías'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
-    tabla += f"-------- text-separator ---------\n"
+    tabla += f"{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
+    tabla += f"---------------------------------\n"
     
     montos_soles = [10, 20, 50, 100, 200, 500, 1000]
     
     for soles in montos_soles:
-        equiv_usd = soles / TASA_SOLES_TARIFARIO if TASA_SOLES_TARIFARIO > 0 else 0
-        recibes_bs = equiv_usd * tasa_bcv
+        # FÓRMULA CORREGIDA: Soles * Tasa Configurada Soles
+        recibes_bs = soles * TASA_SOLES_TARIFARIO
+        # FÓRMULA CORREGIDA: Resultado de Recibes Bs / Tasa BCV
+        equiv_usd = recibes_bs / tasa_bcv if tasa_bcv > 0 else 0
         
-        col_soles = f"{soles} S".ljust(10)
+        col_soles = f"{soles} S/".ljust(10)
         col_bs = f"{recibes_bs:,.2f}".ljust(14)
         col_usd = f"{equiv_usd:,.2f}$".ljust(12)
         
@@ -661,7 +663,7 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
         else:
-            enviar_mensaje(chat_id, "⚠️ Por favor, especifica el tipo de moneda agregando *Bs* o *$* al final de la cantidad (ejemplo: `200000 Bs` o `100 $`).", crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, "⚠️ Por favor, especifica el tipo de moneda añadiendo *Bs* o *$* al final de la cantidad (ejemplo: `200000 Bs` o `100 $`).", crear_teclado_principal(chat_id))
 
     except ValueError:
         enviar_mensaje(chat_id, "❌ Error al leer la cantidad. Asegúrate de escribir solo números y añadir 'Bs' o '$' al final.", crear_teclado_principal(chat_id))
@@ -691,7 +693,7 @@ def mostrar_historial_ves(chat_id):
 # ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
-    global usuario_esperando_calculo, usuario_esperando_tasa_soles
+    global usuario_esperando_calculo
     global TASA_SOLES_TARIFARIO
     
     if not usuario_esta_en_grupo(chat_id):
@@ -706,16 +708,6 @@ def procesar_mensaje(chat_id, texto):
 
     print(f"📩 {texto}")
     guardar_usuario(chat_id)
-
-    # Captura de configuración manual de Soles del Administrador
-    if chat_id == ADMIN_ID and usuario_esperando_tasa_soles.get(chat_id):
-        try:
-            TASA_SOLES_TARIFARIO = float(texto.replace(',', '.'))
-            usuario_esperando_tasa_soles[chat_id] = False
-            enviar_mensaje(chat_id, f"✅ *Tasa Soles del Tarifario actualizada:* {TASA_SOLES_TARIFARIO:.2f}", crear_teclado_principal(chat_id))
-        except ValueError:
-            enviar_mensaje(chat_id, "❌ Error. Envía un número válido. Ejemplo: `3.85`")
-        return
 
     # Identificación rápida de conversiones directas con sufijos de moneda
     if ('bs' in texto.lower() or '$' in texto or 'usd' in texto.lower()) and any(char.isdigit() for char in texto):
@@ -747,16 +739,9 @@ Herramientas disponibles en los menús para consultas rápidas.
         tasa_bcv = obtener_tasa_bcv_actual()
         mensaje = f"⚙️ *PANEL DE CONFIGURACIÓN DE TARIFARIOS*\n\n" \
                   f"Tasa BCV del Día (Automática API): *{tasa_bcv:.2f} Bs*\n" \
-                  f"Tasa Soles Manual: *{TASA_SOLES_TARIFARIO:.2f}*\n\n" \
-                  f"Para cambiar la tasa Soles escribe: `/setsoles VALOR` (Ejemplo: `/setsoles 3.82`)"
+                  f"Tasa Soles Configurada: *{TASA_SOLES_TARIFARIO:.2f}*\n\n" \
+                  f"💡 *Configuración Instantánea:* Para actualizar la Tasa Soles, simplemente escribe el número directo en el chat (Ejemplo: `3.82` o `200`)."
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-    elif texto.startswith('/setsoles ') and chat_id == ADMIN_ID:
-        try:
-            TASA_SOLES_TARIFARIO = float(texto.split()[1].replace(',', '.'))
-            enviar_mensaje(chat_id, f"✅ Tasa Soles fijada en *{TASA_SOLES_TARIFARIO:.2f}*", crear_teclado_principal(chat_id))
-        except:
-            enviar_mensaje(chat_id, "❌ Uso correcto: `/setsoles 3.82`")
 
     elif texto == '¿Cuánto es?':
         usuario_esperando_calculo[chat_id] = True
@@ -810,12 +795,18 @@ Herramientas disponibles en los menús para consultas rápidas.
             enviar_mensaje(chat_id, "❌ Solo el administrador puede ver esto", crear_teclado_opciones(chat_id))
 
     else:
+        # CAPTURA AUTOMÁTICA DE TASA SOLES / CÁLCULO DE GANANCIA
         try:
             monto_limpio = texto.replace(',', '.')
             monto_usuario = float(monto_limpio)
             
             if monto_usuario > 0:
-                calcular_ganancia_neta(chat_id, monto_usuario)
+                # Si el Administrador envía un número plano sin letras, se reconfigura la Tasa Soles automáticamente.
+                if chat_id == ADMIN_ID:
+                    TASA_SOLES_TARIFARIO = monto_usuario
+                    enviar_mensaje(chat_id, f"✅ *Tasa Soles Actualizada Automáticamente:* {TASA_SOLES_TARIFARIO:.2f}\n\nLos tarifarios ya están usando este nuevo valor.", crear_teclado_principal(chat_id))
+                else:
+                    calcular_ganancia_neta(chat_id, monto_usuario)
             else:
                 enviar_mensaje(chat_id, "⚠️ El monto debe ser un número mayor a cero.", crear_teclado_principal(chat_id))
         except ValueError:
@@ -918,7 +909,8 @@ if __name__ == "__main__":
         compra, venta = obtener_precios_p2p_reales(m)
         if compra and venta:
             print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
-            ultimos_precios[m] = compra
+            grid = compra
+            ultimos_precios[m] = grid
             cache_precios[m] = {'compra': compra, 'venta': venta}
             cache_tiempo[m] = time.time()
             if m == 'VES':

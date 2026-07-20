@@ -74,7 +74,8 @@ def crear_teclado_principal(chat_id):
     """Menú Principal reorganizado estrictamente según la nueva lista"""
     teclado = [
         ["Tether + BCV"],
-        ["¿Cuánto Es?", "¿Cuánto Gané?"],
+        ["¿Cuánto Es?"], 
+        ["¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
     
@@ -88,7 +89,8 @@ def crear_teclado_remesas(chat_id):
     """Submenú Remesas importado con botones requeridos e históricos"""
     teclado = [
         ["¿Cuánto es Cruzado?"],
-        ["📋 Tarifario USD", "📋 Tarifario Soles"],
+        ["📋 Tarifario USD"],
+        ["📋 Tarifario Soles"],
         ["⚙️ Ajustar Tasa"],
         ["Tasas Cruzadas"],
         ["Volver al menú anterior"]
@@ -112,7 +114,7 @@ def crear_teclado_opciones(chat_id):
 
 def crear_teclado_cruzado_rapido(chat_id):
     teclado = [
-        ["100 S/", "200 S/", "500 S/"],
+        ["20 S/", "50 S/", "100 S/"],
         ["5000 Bs", "10000 Bs", "20000 Bs"],
         ["Volver al menú anterior"]
     ]
@@ -221,8 +223,8 @@ def obtener_tasas_bcv():
 
 def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
-    mensaje = f"📋 *TARIFARIO EN USD REAL (TASA MANUAL)*\n"
-    mensaje += f"🕐 Tasa BCV (API): {tasa_bcv:.2f} Bs | Perú → Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
+    mensaje = f"📋 *TARIFARIO EN USD*\n"
+    mensaje += f"🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
     
     tabla = f"```\n"
     tabla += f"{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
@@ -245,8 +247,8 @@ def mostrar_tarifario_usd(chat_id):
 
 def mostrar_tarifario_soles(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
-    mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES (TASA MANUAL)*\n"
-    mensaje += f"🕐 Tasa BCV (API): {tasa_bcv:.2f} Bs | Perú → Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
+    mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n"
+    mensaje += f"🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
     
     tabla = f"```\n"
     tabla += f"{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
@@ -322,16 +324,16 @@ def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
             resultado_bs_vp = monto_soles * tasa_ven_peru
             resultado_usd_vp = resultado_bs_vp / tasa_bcv
 
-            mensaje = f"""📊 *PROCESAMIENTO DINÁMICO DE SOLES (TASA MANUAL)*
+            mensaje = f"""📊 *PROCESAMIENTO DINÁMICO DE SOLES*
 
 *Tasa BCV:* {tasa_bcv:.2f} Bs
-*Tasa Perú → Venezuela (Manual):* {tasa_peru_ven:.2f}
-*Tasa Venezuela → Perú (Manual + 15):* {tasa_ven_peru:.2f}
+*Tasa Perú - Venezuela:* {tasa_peru_ven:.2f}
+*Tasa Venezuela - Perú:* {tasa_ven_peru:.2f}
 ━━━━━━━━━━━━━━━━━━━━
-🇵🇪 ➔ 🇻🇪 *Operación Perú → Venezuela:*
+🇵🇪 ➔ 🇻🇪 *Operación Perú - Venezuela:*
 • {monto_soles:,.2f} Soles, Equivalente a *{resultado_bs_pv:,.2f} Bs*, *{resultado_usd_pv:,.2f}$* a tasa BCV
 
-🇻🇪 ➔ 🇵🇪 *Operación Venezuela → Perú:*
+🇻🇪 ➔ 🇵🇪 *Operación Venezuela - Perú:*
 • Para que lleguen {monto_soles:,.2f} Soles se necesita *{resultado_bs_vp:,.2f} Bs*, equivalente a *{resultado_usd_vp:,.2f}$* a tasa BCV
 ━━━━━━━━━━━━━━━━━━━━
 🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
@@ -348,12 +350,12 @@ def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
             mensaje = f"""⚖️ *CALCULADORA DE TASAS CRUZADAS (TASA MANUAL)*
 
 *Tasa BCV:* {tasa_bcv:.2f} Bs
-*Tasa Perú → Venezuela (Manual):* {tasa_peru_ven:.2f} | *Tasa Venezuela → Perú (Manual + 15):* {tasa_ven_peru:.2f}
+*Tasa Perú - Venezuela (Manual):* {tasa_peru_ven:.2f} | *Tasa Venezuela - Perú:* {tasa_ven_peru:.2f}
 ━━━━━━━━━━━━━━━━━━━━
-🇵🇪 ➔ 🇻🇪 *Fórmula Perú → Venezuela:*
+🇵🇪 ➔ 🇻🇪 *Fórmula Perú - Venezuela:*
 • {monto_bs:,.2f} Bs, *${resultado_usd_bcv:,.2f}$* a tasa BCV, son *{resultado_soles_pv:,.2f} Soles*
 
-🇻🇪 ➔ 🇵🇪 *Fórmula Venezuela → Perú:*
+🇻🇪 ➔ 🇵🇪 *Fórmula Venezuela - Perú:*
 • Por {monto_bs:,.2f} Bs equivalente a *${resultado_usd_bcv:,.2f}$* a tasa BCV, llegan *{resultado_soles_vp:,.2f} Soles*
 ━━━━━━━━━━━━━━━━━━━━
 🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""

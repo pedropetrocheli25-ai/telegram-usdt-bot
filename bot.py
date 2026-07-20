@@ -78,10 +78,10 @@ def crear_teclado_principal(chat_id):
         ["¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
-    
+
     if chat_id == ADMIN_ID:
         teclado.append(["Remesas 💼"])
-        
+
     teclado.append(["+ Opciones"])
     return {"keyboard": teclado, "resize_keyboard": True}
 
@@ -225,23 +225,23 @@ def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     mensaje = f"📋 *TARIFARIO EN USD*\n"
     mensaje += f"🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
-    
+
     tabla = f"```\n"
     tabla += f"{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
     tabla += f"---------------------------------\n"
-    
+
     montos_usd = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
-    
+
     for usd in montos_usd:
         recibes_bs = usd * tasa_bcv
         equiv_soles = recibes_bs / TASA_SOLES_TARIFARIO if TASA_SOLES_TARIFARIO > 0 else 0
-        
+
         col_usd = f"{usd}$".ljust(9)
         col_bs = f"{recibes_bs:,.2f}".ljust(14)
         col_soles = f"{equiv_soles:,.2f} S/".ljust(12)
-        
+
         tabla += f"{col_usd}|{col_bs}|{col_soles}\n"
-        
+
     tabla += f"```"
     enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_remesas(chat_id))
 
@@ -249,27 +249,27 @@ def mostrar_tarifario_soles(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n"
     mensaje += f"🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
-    
+
     tabla = f"```\n"
     tabla += f"{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
     tabla += f"---------------------------------\n"
-    
+
     montos_soles = [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
-    
+
     for soles in montos_soles:
         recibes_bs = soles * TASA_SOLES_TARIFARIO
         equiv_usd = recibes_bs / tasa_bcv if tasa_bcv > 0 else 0
-        
+
         col_soles = f"{soles} S/".ljust(10)
         col_bs = f"{recibes_bs:,.2f}".ljust(14)
         col_usd = f"{equiv_usd:,.2f}$".ljust(12)
-        
+
         tabla += f"{col_soles}|{col_bs}|{col_usd}\n"
-        
+
     tabla += f"```"
     enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_remesas(chat_id))
 
-# ==================== CÁLCULO MATEMÁTICO AUTOMÁTICO ORIGINAL (SIN TOCAR) ====================
+# ==================== TASAS CRUZADAS MODIFICADAS EXACTAMENTE SEGÚN TU SOLICITUD ====================
 
 def calcular_tasas_cruzadas():
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
@@ -280,7 +280,9 @@ def calcular_tasas_cruzadas():
         return None
 
     tasas = {}
-    tasas['Perú → Venezuela'] = ((venta_ves / compra_pen) * 0.95) - 0.50
+
+    # PERÚ (PEN)
+    tasas['Perú → Venezuela'] = (venta_ves / compra_pen) * 0.95
     tasas['Venezuela → Perú'] = tasas['Perú → Venezuela'] + 15
     if compra_pen and venta_cop:
         tasas['Perú → Colombia'] = (1 / (compra_pen / venta_cop)) * 0.95
@@ -288,15 +290,60 @@ def calcular_tasas_cruzadas():
         tasas['Perú → Colombia'] = 0
     tasas['Colombia → Perú'] = (compra_cop / venta_pen) * 1.06
 
+    # COLOMBIA (COP)
     tasas['Colombia → Venezuela'] = (compra_cop / venta_ves) * 1.06
     if compra_ves and venta_cop:
         tasas['Venezuela → Colombia'] = (1 / (compra_ves / venta_cop)) * 0.95
     else:
         tasas['Venezuela → Colombia'] = 0
     tasas['Colombia → Brasil'] = (compra_cop / 5.10) * 1.06
+
+    # VENEZUELA (VES)
     tasas['Venezuela → Brasil'] = (compra_ves / 5.10) * 1.05
 
     return tasas
+
+def mostrar_tasas_cambio(chat_id):
+    tasas = calcular_tasas_cruzadas()
+
+    if not tasas:
+        mensaje = "❌ No se pudieron obtener los datos para calcular las tasas"
+        enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
+        return
+
+    compra_ves, venta_ves = obtener_precios_con_cache('VES')
+    compra_cop, venta_cop = obtener_precios_con_cache('COP')
+    compra_pen, venta_pen = obtener_precios_con_cache('PEN')
+
+    mensaje = f"🏦 *TASAS DE CAMBIO CRUZADAS*\n"
+    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+
+    mensaje += f"📊 *Precios de referencia:*\n"
+    mensaje += f"  🇻🇪 VES: Compra {compra_ves:.2f} | Venta {venta_ves:.2f}\n"
+    mensaje += f"  🇨🇴 COP: Compra {compra_cop:.2f} | Venta {venta_cop:.2f}\n"
+    mensaje += f"  🇵🇪 PEN: Compra {compra_pen:.2f} | Venta {venta_pen:.2f}\n\n"
+
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇵🇪 *PERÚ (PEN)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Perú → Venezuela']:.2f} Bs\n"
+    mensaje += f"  → 🇨🇴 Colombia: {tasas['Perú → Colombia']:.2f} COP\n\n"
+
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇨🇴 *COLOMBIA (COP)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Colombia → Venezuela']:.2f} Bs\n"
+    mensaje += f"  → 🇵🇪 Perú: {tasas['Colombia → Perú']:.2f} PEN\n"
+    mensaje += f"  → 🇧🇷 Brasil: {tasas['Colombia → Brasil']:.2f} BRL\n\n"
+
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇻🇪 *VENEZUELA (VES)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇵🇪 Perú: {tasas['Venezuela → Perú']:.2f} PEN\n"
+    mensaje += f"  → 🇨🇴 Colombia: {tasas['Venezuela → Colombia']:.2f} COP\n"
+    mensaje += f"  → 🇧🇷 Brasil: {tasas['Venezuela → Brasil']:.2f} BRL"
+
+    enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
 
 # ==================== ¿CUÁNTO ES CRUZADO? (UNIFICADO A TASA MANUAL) ====================
 
@@ -548,7 +595,7 @@ def mostrar_historial_ves(chat_id):
 def procesar_mensaje(chat_id, texto):
     global usuario_esperando_calculo, usuario_esperando_cruzado, usuario_configurando_soles
     global TASA_SOLES_TARIFARIO
-    
+
     if not usuario_esta_en_grupo(chat_id): return
     guardar_usuario(chat_id)
 
@@ -616,18 +663,10 @@ def procesar_mensaje(chat_id, texto):
             usuario_configurando_soles[chat_id] = True
             enviar_mensaje(chat_id, f"⚙️ *Tasa Actual:* {TASA_SOLES_TARIFARIO:.2f}\n\n✍️ Envía el nuevo valor (Ej: `3.85`).", crear_teclado_remesas(chat_id))
 
-    # --- BOTÓN RECUPERADO DE TASAS CRUZADAS AUTOMÁTICAS ---
+    # --- BOTÓN DE TASAS CRUZADAS ENLAZADO A TU NUEVA FUNCIÓN VISUAL ---
     elif texto == 'Tasas Cruzadas':
         if chat_id == ADMIN_ID:
-            tasas = calcular_tasas_cruzadas()
-            if tasas:
-                mensaje = "📊 *TASAS CRUZADAS MERCADO AUTOMÁTICO (BINANCE)*\n"
-                mensaje += f"Lógica P2P: ((VES_venta / PEN_compra) * 0.95) - 0.50\n\n"
-                for clave, valor in tasas.items():
-                    mensaje += f"• *{clave}:* {valor:.4f}\n"
-                enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
-            else:
-                enviar_mensaje(chat_id, "⏳ Error obteniendo tasas Binance.", crear_teclado_remesas(chat_id))
+            mostrar_tasas_cambio(chat_id)
 
     # --- SEGUNDO MENÚ (+ OPCIONES) ---
     elif texto == '+ Opciones':

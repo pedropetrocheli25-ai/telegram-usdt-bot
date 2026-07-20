@@ -67,31 +67,38 @@ precio_apertura_ves = None
 
 # ==================== ESTADOS DE ENTRADA DE USUARIOS ====================
 usuario_esperando_calculo = {} 
-usuario_esperando_cruzado = {}  # Nuevo estado para el botón de tasa cruzada
-usuario_configurando_soles = {}  # Estado específico para que no interfiera con otros cálculos
+usuario_esperando_cruzado = {}  
+usuario_configurando_soles = {}  
 
-# ==================== FUNCIONES BASE DE TELEGRAM ====================
+# ==================== INTERFACES DE TECLADOS REORGANIZADAS ====================
 
 def crear_teclado_principal(chat_id):
-    """Genera el menú de inicio con la nueva estructura de botones solicitada"""
+    """Menú Principal: Acceso para todos. Botón 'Remesas' exclusivo para Admin"""
     teclado = [
         ["Tether + BCV"],
-        ["¿Cuánto es?", "¿Cuánto es Cruzado?"],  # Añadido el nuevo botón en conjunto
-        ["¿Cuánto Gané?"],
-        ["📋 Tarifario USD", "📋 Tarifario Soles"],
+        ["¿Cuánto Es?", "¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
-
-    # Botones exclusivos del Administrador ocultos al público
+    
+    # El botón 'Remesas' solo aparece en el teclado si el usuario es el administrador
     if chat_id == ADMIN_ID:
-        teclado.append(["🏦 Tasas de Cambio", "⚙️ Ajustar Tasas"])
-
+        teclado.append(["Remesas 💼"])
+        
     teclado.append(["+ Opciones"])
+    return {"keyboard": teclado, "resize_keyboard": True}
 
+def crear_teclado_remesas(chat_id):
+    """Submenú Remesas: Exclusivo de Administrador con sus herramientas de gestión"""
+    teclado = [
+        ["¿Cuánto es Cruzado?"],
+        ["📋 Tarifario USD", "📋 Tarifario Soles"],
+        ["⚙️ Ajustar Tasa"],
+        ["Volver al menú anterior"]
+    ]
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_opciones(chat_id):
-    """Genera el menú de opciones secundarias con la nueva estructura solicitada"""
+    """Segundo Menú (+ Opciones): Precios generales e información de usuarios (Admin)"""
     teclado = [
         ["Precio USDT"],
         ["Precio VES"],
@@ -102,8 +109,16 @@ def crear_teclado_opciones(chat_id):
     if chat_id == ADMIN_ID:
         teclado.append(["Usuarios Registrados"])
 
-    teclado.append(["Volver al menú principal"])
+    teclado.append(["Volver al menú anterior"])
+    return {"keyboard": teclado, "resize_keyboard": True}
 
+def crear_teclado_cruzado_rapido(chat_id):
+    """Submenú rápido que asiste a la calculadora cruzada"""
+    teclado = [
+        ["100 S/", "200 S/", "500 S/"],
+        ["5000 Bs", "10000 Bs", "20000 Bs"],
+        ["Volver al menú anterior"]
+    ]
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def enviar_mensaje(chat_id, texto, teclado=None):
@@ -217,7 +232,7 @@ def mostrar_tarifario_usd(chat_id):
         tabla += f"{col_usd}|{col_bs}|{col_soles}\n"
         
     tabla += f"```"
-    enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_principal(chat_id))
+    enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_remesas(chat_id))
 
 def mostrar_tarifario_soles(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
@@ -241,7 +256,7 @@ def mostrar_tarifario_soles(chat_id):
         tabla += f"{col_soles}|{col_bs}|{col_usd}\n"
         
     tabla += f"```"
-    enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_principal(chat_id))
+    enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_remesas(chat_id))
 
 # ==================== TASAS CRUZADAS MODIFICADAS ====================
 
@@ -254,8 +269,6 @@ def calcular_tasas_cruzadas():
         return None
 
     tasas = {}
-
-    # PERÚ (PEN) -> MODIFICADO: Mantiene el 5% original y descuenta 0.50 adicionales al resultado
     tasas['Perú → Venezuela'] = ((venta_ves / compra_pen) * 0.95) - 0.50
     tasas['Venezuela → Perú'] = tasas['Perú → Venezuela'] + 15
     if compra_pen and venta_cop:
@@ -264,63 +277,20 @@ def calcular_tasas_cruzadas():
         tasas['Perú → Colombia'] = 0
     tasas['Colombia → Perú'] = (compra_cop / venta_pen) * 1.06
 
-    # COLOMBIA (COP)
     tasas['Colombia → Venezuela'] = (compra_cop / venta_ves) * 1.06
     if compra_ves and venta_cop:
         tasas['Venezuela → Colombia'] = (1 / (compra_ves / venta_cop)) * 0.95
     else:
         tasas['Venezuela → Colombia'] = 0
     tasas['Colombia → Brasil'] = (compra_cop / 5.10) * 1.06
-
-    # VENEZUELA (VES)
     tasas['Venezuela → Brasil'] = (compra_ves / 5.10) * 1.05
 
     return tasas
 
-def mostrar_tasas_cambio(chat_id):
-    tasas = calcular_tasas_cruzadas()
-
-    if not tasas:
-        mensaje = "❌ No se pudieron obtener los datos para calcular las tasas"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-        return
-
-    compra_ves, venta_ves = obtener_precios_con_cache('VES')
-    compra_cop, venta_cop = obtener_precios_con_cache('COP')
-    compra_pen, venta_pen = obtener_precios_con_cache('PEN')
-
-    mensaje = f"🏦 *TASAS DE CAMBIO CRUZADAS*\n"
-    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-
-    mensaje += f"📊 *Precios de referencia:*\n"
-    mensaje += f"  🇻🇪 VES: Compra {compra_ves:.2f} | Venta {venta_ves:.2f}\n"
-    mensaje += f"  🇨🇴 COP: Compra {compra_cop:.2f} | Venta {venta_cop:.2f}\n"
-    mensaje += f"  🇵🇪 PEN: Compra {compra_pen:.2f} | Venta {venta_pen:.2f}\n\n"
-
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"🇵🇪 *PERÚ (PEN)*\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Perú → Venezuela']:.2f} Bs\n"
-    mensaje += f"  → 🇨🇴 Colombia: {tasas['Perú → Colombia']:.2f} COP\n\n"
-
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"🇨🇴 *COLOMBIA (COP)*\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Colombia → Venezuela']:.2f} Bs\n"
-    mensaje += f"  → 🇵🇪 Perú: {tasas['Colombia → Perú']:.2f} PEN\n"
-    mensaje += f"  → 🇧🇷 Brasil: {tasas['Colombia → Brasil']:.2f} BRL\n\n"
-
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"🇻🇪 *VENEZUELA (VES)*\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
-    mensaje += f"  → 🇵🇪 Perú: {tasas['Venezuela → Perú']:.2f} PEN\n"
-    mensaje += f"  → 🇨🇴 Colombia: {tasas['Venezuela → Colombia']:.2f} COP\n"
-    mensaje += f"  → 🇧🇷 Brasil: {tasas['Venezuela → Brasil']:.2f} BRL"
-
-    enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
 # ==================== ALERTA DE FLUCTUACIÓN ====================
 
+with open("tasas_anteriores.json", "w") as f:
+    pass
 ultimas_tasas_cruzadas = {}
 TASAS_ANTERIORES_ARCHIVO = "tasas_anteriores.json"
 
@@ -604,10 +574,9 @@ Análisis financiero detallado basado en un capital de *${monto:,.2f} USD*:
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== BOTÓN ORIGINAL: ¿CUÁNTO ES? RESTAURADO ====================
+# ==================== BOTÓN: ¿CUÁNTO ES? ====================
 
 def calcular_conversion_bcv_medio(chat_id, texto_monto):
-    """Lógica original intacta: Calcula de forma estándar basándose en la tasa BCV + 0.50%"""
     tasas = obtener_tasas_bcv()
     if not tasas:
         enviar_mensaje(chat_id, "⏳ No se pudo obtener la tasa BCV oficial en este momento.", crear_teclado_principal(chat_id))
@@ -662,13 +631,12 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
     except ValueError:
         enviar_mensaje(chat_id, "❌ Error al leer la cantidad. Asegúrate de escribir solo números y añadir el identificador al final.", crear_teclado_principal(chat_id))
 
-# ==================== BOTÓN NUEVO: ¿CUÁNTO ES CRUZADO? ====================
+# ==================== BOTÓN: ¿CUÁNTO ES CRUZADO? ====================
 
 def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
-    """Nueva función independiente para procesar los cálculos avanzados solicitados"""
     tasas = obtener_tasas_bcv()
     if not tasas:
-        enviar_mensaje(chat_id, "⏳ No se pudo obtener la tasa BCV oficial en este momento.", crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "⏳ No se pudo obtener la tasa BCV oficial en este momento.", crear_teclado_remesas(chat_id))
         return
 
     tasa_bcv = tasas['usd']
@@ -679,16 +647,13 @@ def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
     tasa_ven_peru = tasas_cruzadas['Venezuela → Perú'] if tasas_cruzadas else 265.00
 
     try:
-        # --- FLUJO CON SOLES (S/ o soles) ---
         if 's/' in texto_limpio or 'soles' in texto_limpio or 'sol' in texto_limpio:
             monto_str = texto_limpio.replace('s/', '').replace('soles', '').replace('sol', '').replace(',', '.').strip()
             monto_soles = float(monto_str)
 
-            # 1. Entrada de Soles usando Perú → Venezuela
             resultado_bs_pv = monto_soles * tasa_peru_ven
             resultado_usd_pv = resultado_bs_pv / tasa_bcv
 
-            # 2. Entrada de Soles usando Venezuela → Perú
             resultado_bs_vp = monto_soles * tasa_ven_peru
             resultado_usd_vp = resultado_bs_vp / tasa_bcv
 
@@ -705,9 +670,8 @@ def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
 • Para que lleguen {monto_soles:,.2f} Soles se necesita *{resultado_bs_vp:,.2f} Bs*, equivalente a *{resultado_usd_vp:,.2f}$* a tasa BCV
 ━━━━━━━━━━━━━━━━━━━━
 🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
-            enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, mensaje, crear_teclado_cruzado_rapido(chat_id))
 
-        # --- FLUJO CON BOLÍVARES (Bs) ---
         elif 'bs' in texto_limpio:
             monto_str = texto_limpio.replace('bs', '').replace(',', '.').strip()
             monto_bs = float(monto_str)
@@ -728,12 +692,12 @@ def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
 • Por {monto_bs:,.2f} Bs equivalente a *${resultado_usd_bcv:,.2f}$* a tasa BCV, llegan *{resultado_soles_vp:,.2f} Soles*
 ━━━━━━━━━━━━━━━━━━━━
 🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
-            enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, mensaje, crear_teclado_cruzado_rapido(chat_id))
         else:
-            enviar_mensaje(chat_id, "⚠️ Para cálculos cruzados indica la cantidad añadiendo *S/* o *Bs* al final (ejemplo: `100 S/` o `25000 Bs`).", crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, "⚠️ Para cálculos cruzados indica la cantidad añadiendo *S/* o *Bs* al final (ejemplo: `100 S/` o `25000 Bs`).", crear_teclado_cruzado_rapido(chat_id))
 
     except ValueError:
-        enviar_mensaje(chat_id, "❌ Error al realizar la conversión cruzada. Verifica la cantidad escrita.", crear_teclado_principal(chat_id))
+        enviar_mensaje(chat_id, "❌ Error al realizar la conversión cruzada. Verifica la cantidad escrita.", crear_teclado_cruzado_rapido(chat_id))
 
 # ==================== HISTORIAL VES ====================
 
@@ -757,156 +721,146 @@ def mostrar_historial_ves(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== PROCESAR MENSAJES ====================
+# ==================== PROCESAR MENSAJES CORREGIDO (ENRUTAMIENTO) ====================
 
 def procesar_mensaje(chat_id, texto):
     global usuario_esperando_calculo, usuario_esperando_cruzado, usuario_configurando_soles
     global TASA_SOLES_TARIFARIO
     
     if not usuario_esta_en_grupo(chat_id):
-        mensaje_bloqueo = (
-            "❌ *Acceso Denegado*\n\n"
-            "Este bot es privado y exclusivo para miembros de nuestra comunidad.\n\n"
-            "⚠️ Para poder usarlo, debes pertenecer a nuestro grupo oficial. "
-            "Una vez dentro del grupo, vuelve aquí y presiona /start."
-        )
-        enviar_mensaje(chat_id, mensaje_bloqueo)
         return
 
     print(f"📩 {texto}")
     guardar_usuario(chat_id)
 
-    # CAPTURA DE TASA SOLES: Única y exclusivamente si el administrador está en el estado de configuración
+    # CAPTURA DE CONFIGURACIÓN DE TASA SOLES
     if chat_id == ADMIN_ID and usuario_configurando_soles.get(chat_id):
         try:
             monto_limpio = texto.replace(',', '.')
             TASA_SOLES_TARIFARIO = float(monto_limpio)
             usuario_configurando_soles[chat_id] = False  
-            enviar_mensaje(chat_id, f"✅ *Tasa Soles configurada con éxito:* {TASA_SOLES_TARIFARIO:.2f}\n\nLos tarifarios ya están usando este nuevo valor.", crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, f"✅ *Tasa Soles configurada con éxito:* {TASA_SOLES_TARIFARIO:.2f}", crear_teclado_remesas(chat_id))
             return
         except ValueError:
             pass  
 
-    # Enrutamiento inteligente basado en los estados activos de los botones
+    # GESTIÓN INTELIGENTE DE CAPTURA NUMÉRICA EN TEXTO ABIERTO
     if any(char.isdigit() for char in texto):
         if usuario_esperando_cruzado.get(chat_id) or 's/' in texto.lower() or 'soles' in texto.lower():
             calcular_conversion_tasas_cruzadas(chat_id, texto)
-            usuario_esperando_cruzado[chat_id] = False
             return
         elif usuario_esperando_calculo.get(chat_id) or 'bs' in texto.lower() or '$' in texto or 'usd' in texto.lower():
             calcular_conversion_bcv_medio(chat_id, texto)
             usuario_esperando_calculo[chat_id] = False
             return
 
+    # --- COMANDOS Y BOTONES PRINCIPALES ---
     if texto == '/start':
         usuario_configurando_soles[chat_id] = False
-        mensaje = """
-Bienvenido a TetherPrueba
-
-Soy tu asistente diseñado para facilitarte la información sobre las tasas del momento de VES, COP y PEN del P2P de Binance.
-
-Herramientas disponibles en los menús para consultas rápidas.
-"""
+        mensaje = "Bienvenido a TetherPrueba\n\nAsistente financiero automatizado para tasas P2P y gestión cambiaria."
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto == 'Tether + BCV' or texto == '/tether':
-        usuario_configurando_soles[chat_id] = False
+    elif texto == 'Tether + BCV':
         mostrar_tether_vs_bcv(chat_id)
 
-    elif texto == '📋 Tarifario USD':
-        usuario_configurando_soles[chat_id] = False
-        mostrar_tarifario_usd(chat_id)
-
-    elif texto == '📋 Tarifario Soles':
-        usuario_configurando_soles[chat_id] = False
-        mostrar_tarifario_soles(chat_id)
-
-    elif texto == '⚙️ Ajustar Tasas' and chat_id == ADMIN_ID:
-        usuario_configurando_soles[chat_id] = True
-        tasa_bcv = obtener_tasa_bcv_actual()
-        mensaje = f"⚙️ *PANEL DE CONFIGURACIÓN DE TARIFARIOS*\n\n" \
-                  f"Tasa BCV del Día (Automática API): *{tasa_bcv:.2f} Bs*\n" \
-                  f"Tasa Soles Actual: *{TASA_SOLES_TARIFARIO:.2f}*\n\n" \
-                  f"💡 *Ajuste Automático:* Envía directamente el número en el siguiente mensaje para reconfigurar la Tasa Soles (Ejemplo: `3.85` o `200`)."
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-    elif texto == '¿Cuánto es?':
-        usuario_configurando_soles[chat_id] = False
-        usuario_esperando_cruzado[chat_id] = False
+    elif texto == '¿Cuánto Es?':
         usuario_esperando_calculo[chat_id] = True
-        mensaje = "✍️ *Calculadora Estándar BCV*\n\nEscribe directamente la cantidad seguida de *Bs* o *$* para convertir usando la tasa BCV + 0.50%.\n\nEjemplos:\n• `25000 Bs`\n• `100 $`"
+        usuario_esperando_cruzado[chat_id] = False
+        mensaje = "✍️ *Calculadora Estándar BCV*\n\nEscribe la cantidad seguida de *Bs* o *$* (Ej: `25000 Bs` o `100 $`)."
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto == '¿Cuánto es Cruzado?':
-        usuario_configurando_soles[chat_id] = False
-        usuario_esperando_calculo[chat_id] = False
-        usuario_esperando_cruzado[chat_id] = True
-        mensaje = "✍️ *Calculadora de Tasas Cruzadas Avanzada*\n\nEscribe directamente la cantidad que deseas procesar seguida de su moneda (*S/* o *Bs*).\n\nEjemplos:\n• `100 S/` o `100 Soles` (Calcula Soles enviados y recibidos simulados)\n• `25000 Bs` (Desglosa cálculos cruzados a Soles y dólares BCV)"
+    elif texto == '¿Cuánto Gané?':
+        mensaje = "✍️ *Calculadora de Ganancias*\n\nEscribe directamente el monto en *USD* que deseas calcular (Ej: `100`)."
         enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-    elif texto == '¿Cuánto Gané?' or texto == '/cuantogane':
-        usuario_configurando_soles[chat_id] = False
-        mensaje = "✍️ *Calculadora de Ganancias Inteligente*\n\nPor favor, escribe directamente en el chat el monto en *USD* que deseas calcular (ejemplo: `50` o `150.50`) y te daré el desglose de tu ganancia al instante."
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-
-    elif texto == '📈 Historial de brecha VES' or texto == '/historial':
-        usuario_configurando_soles[chat_id] = False
+    elif texto == '📈 Historial de brecha VES':
         mostrar_historial_ves(chat_id)
 
-    elif texto == '🏦 Tasas de Cambio' or texto == '/tasas':
-        usuario_configurando_soles[chat_id] = False
+    # --- ENTRADA AL SUBMENÚ DE REMESAS (SOLO ADMIN) ---
+    elif texto == 'Remesas 💼':
         if chat_id == ADMIN_ID:
-            mostrar_tasas_cambio(chat_id)
+            mensaje = "💼 *SUBMENÚ DE REMESAS & OPERACIONES INTERNAS*\n\nSelecciona una herramienta de administración:"
+            enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
         else:
-            enviar_mensaje(chat_id, "❌ Solo el administrador puede usar este comando", crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
 
+    # --- BOTONES INTERNOS DEL SUBMENÚ REMESAS (SOLO ADMIN) ---
+    elif texto == '¿Cuánto es Cruzado?':
+        if chat_id == ADMIN_ID:
+            usuario_esperando_calculo[chat_id] = False
+            usuario_esperando_cruzado[chat_id] = True
+            mensaje = "✍️ *Calculadora Cruzada (Remesas)*\n\nEscribe el monto seguido de *S/* o *Bs* (Ej: `100 S/` o `20000 Bs`)."
+            enviar_mensaje(chat_id, mensaje, crear_teclado_cruzado_rapido(chat_id))
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
+
+    elif texto == '📋 Tarifario USD':
+        if chat_id == ADMIN_ID:
+            mostrar_tarifario_usd(chat_id)
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
+
+    elif texto == '📋 Tarifario Soles':
+        if chat_id == ADMIN_ID:
+            mostrar_tarifario_soles(chat_id)
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
+
+    elif texto == '⚙️ Ajustar Tasa':
+        if chat_id == ADMIN_ID:
+            usuario_configurando_soles[chat_id] = True
+            tasa_bcv = obtener_tasa_bcv_actual()
+            mensaje = f"⚙️ *AJUSTAR TASA SOLES*\n\nTasa BCV: *{tasa_bcv:.2f} Bs*\nTasa Soles Configurada: *{TASA_SOLES_TARIFARIO:.2f}*\n\n✍️ Envía el nuevo valor numérico (Ej: `3.85`)."
+            enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
+
+    # --- SEGUNDO MENÚ (+ OPCIONES) ---
     elif texto == '+ Opciones':
-        usuario_configurando_soles[chat_id] = False
-        mensaje = "📋 *OPCIONES SECUNDARIAS*\n\nSelecciona una opción del menú:"
+        mensaje = "📋 *SEGUNDO MENÚ (MERCADO P2P)*\n\nSelecciona el precio que deseas consultar:"
         enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
-
-    elif texto == 'Volver al menú principal':
-        usuario_configurando_soles[chat_id] = False
-        mensaje = "🏠 *Volviendo al menú principal*"
-        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
     elif texto == 'Precio USDT':
         mostrar_precios_usdt(chat_id)
 
-    elif texto == 'Precio VES' or texto == '/ves':
+    elif texto == 'Precio VES':
         mostrar_precio_individual(chat_id, 'VES')
 
-    elif texto == 'Precio COP' or texto == '/cop':
+    elif texto == 'Precio COP':
         mostrar_precio_individual(chat_id, 'COP')
 
-    elif texto == 'Precio PEN' or texto == '/pen':
+    elif texto == 'Precio PEN':
         mostrar_precio_individual(chat_id, 'PEN')
 
-    elif texto == 'Usuarios Registrados' or texto == '/usuarios':
+    elif texto == 'Usuarios Registrados':
         if chat_id == ADMIN_ID:
             usuarios = obtener_usuarios()
-            if usuarios:
-                mensaje = f"👥 *SISTEMA AUTOMÁTICO ACTIVO*\n\nTotal interactuando: {len(usuarios)}\n\nEl bot verifica accesos en tiempo real mediante Rose."
-                for uid in usuarios:
-                    mensaje += f"\n• `{uid}`"
-            else:
-                mensaje = "📝 No hay usuarios registrados"
+            mensaje = f"👥 *SISTEMA AUTOMÁTICO ACTIVO*\n\nTotal interactuando: {len(usuarios)}"
+            for uid in usuarios:
+                mensaje += f"\n• `{uid}`"
             enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
         else:
-            enviar_mensaje(chat_id, "❌ Solo el administrador puede ver esto", crear_teclado_opciones(chat_id))
+            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_opciones(chat_id))
+
+    # --- BOTÓN COMÚN DE RETORNO AL MENÚ ANTERIOR / PRINCIPAL ---
+    elif texto == 'Volver al menú anterior':
+        usuario_configurando_soles[chat_id] = False
+        usuario_esperando_calculo[chat_id] = False
+        usuario_esperando_cruzado[chat_id] = False
+        mensaje = "🏠 *Regresando al menú de inicio*"
+        enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
     else:
-        # CÁLCULO DE GANANCIAS POR DEFECTO
+        # CAPTURA DE GANANCIA POR DEFECTO PARA ENTRADAS NUMÉRICAS SIN PREFIJO
         try:
             monto_limpio = texto.replace(',', '.')
             monto_usuario = float(monto_limpio)
-            
             if monto_usuario > 0:
                 calcular_ganancia_neta(chat_id, monto_usuario)
             else:
-                enviar_mensaje(chat_id, "⚠️ El monto debe ser un número mayor a cero.", crear_teclado_principal(chat_id))
+                enviar_mensaje(chat_id, "⚠️ Ingrese un valor válido superior a 0.", crear_teclado_principal(chat_id))
         except ValueError:
-            enviar_mensaje(chat_id, "Usa /start o selecciona una opción de los menús.", crear_teclado_principal(chat_id))
+            enviar_mensaje(chat_id, "Comando no reconocido. Utilice los menús de la pantalla.", crear_teclado_principal(chat_id))
 
 # ==================== POLLING ====================
 
@@ -1005,6 +959,7 @@ if __name__ == "__main__":
         compra, venta = obtener_precios_p2p_reales(m)
         if compra and venta:
             print(f"  ✅ {m}: {compra:.2f} / {venta:.2f}")
+            grid = compra
             grid = compra
             ultimos_precios[m] = grid
             cache_precios[m] = {'compra': compra, 'venta': venta}

@@ -33,8 +33,8 @@ TASA_SOLES_TARIFARIO = 3.80
 # ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {
     'VES': 1.0,    
-    'COP': 100.0,  
-    'PEN': 0.10    
+    'COP': 50.0,  
+    'PEN': 0.05    
 }
 
 FLUCTUACION_UMBRAL = 0.8
@@ -71,7 +71,7 @@ usuario_configurando_soles = {}
 # ==================== INTERFACES DE TECLADOS REORGANIZADAS ====================
 
 def crear_teclado_principal(chat_id):
-    """Menú Principal reorganizado estrictamente según la nueva lista"""
+    """Menú Principal reorganizado"""
     teclado = [
         ["Tether + BCV"],
         ["¿Cuánto Es?"], 
@@ -86,7 +86,7 @@ def crear_teclado_principal(chat_id):
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_remesas(chat_id):
-    """Submenú Remesas importado con botones requeridos e históricos"""
+    """Submenú Remesas"""
     teclado = [
         ["¿Cuánto es Cruzado?"],
         ["📋 Tarifario USD"],
@@ -219,7 +219,7 @@ def obtener_tasas_bcv():
         pass
     return None
 
-# ==================== TARIFARIOS MANUALEZ UNIFICADOS ====================
+# ==================== TARIFARIOS UNIFICADOS ====================
 
 def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
@@ -269,7 +269,7 @@ def mostrar_tarifario_soles(chat_id):
     tabla += f"```"
     enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_remesas(chat_id))
 
-# ==================== TASAS CRUZADAS MODIFICADAS EXACTAMENTE SEGÚN TU SOLICITUD ====================
+# ==================== TASAS CRUZADAS ====================
 
 def calcular_tasas_cruzadas():
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
@@ -345,7 +345,7 @@ def mostrar_tasas_cambio(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
 
-# ==================== ¿CUÁNTO ES CRUZADO? (UNIFICADO A TASA MANUAL) ====================
+# ==================== ¿CUÁNTO ES CRUZADO? ====================
 
 def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
     tasas = obtener_tasas_bcv()
@@ -356,7 +356,6 @@ def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
     tasa_bcv = tasas['usd']
     texto_limpio = texto_monto.strip().lower()
 
-    # Se unifica para llevar la misma secuencia y lógica exacta ligada a Ajustar Tasa
     tasa_peru_ven = TASA_SOLES_TARIFARIO
     tasa_ven_peru = TASA_SOLES_TARIFARIO + 15
 
@@ -544,41 +543,75 @@ def mostrar_tether_vs_bcv(chat_id):
     if not compra or not tasas:
         enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal(chat_id))
         return
-    bcv_con_porcentaje = tasas['usd'] * 1.005
+    
+    tasa_bcv = tasas['usd']
+    bcv_con_porcentaje = tasa_bcv * 1.005
     diff_compra = compra - bcv_con_porcentaje
     pct_compra = (diff_compra / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
-    mensaje = f"🪙 *TETHER + BCV (+0.50%)*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n🏦 *BCV Oficial:* {tasas['usd']:.2f} Bs\n📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n🇻🇪 *PRECIO VES EN EL MOMENTO (Binance P2P):*\n  🟢 COMPRA (Tasa): {compra:.2f} Bs\n  🔴 VENTA: {venta:.2f} Bs\n  📊 Spread: {compra-venta:.2f} Bs\n\n⚖️ *Diferencia vs BCV+0.50%:*\n  Diferencia: {diff_compra:+.2f} Bs\n  Porcentaje: {pct_compra:+.1f}%\n"
+
+    # Operaciones matemáticas calculadas NETAMENTE a Tasa BCV Oficial
+    cantidades_usd = [10, 20, 50, 100]
+    cantidades_bs = [1000, 5000, 10000, 50000]
+
+    operaciones_usd_bs = "\n".join([f"• {monto}$ = *{(monto * tasa_bcv):,.2f} Bs*" for monto in cantidades_usd])
+    operaciones_bs_usd = "\n".join([f"• {monto:,.0f} Bs = *{(monto / tasa_bcv):,.2f}$*" for monto in cantidades_bs])
+
+    mensaje = f"""🪙 *TETHER + BCV*
+🕐 {datetime.now().strftime('%H:%M:%S')}
+
+🏦 *BCV Oficial:* {tasa_bcv:.2f} Bs
+📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs
+
+🇻🇪 *PRECIO VES EN EL MOMENTO (Binance P2P):*
+  🟢 COMPRA: {compra:.2f} Bs
+  🔴 VENTA: {venta:.2f} Bs
+  📊 Spread: {compra-venta:.2f} Bs
+
+⚖️ *Diferencia vs BCV+0.50%:*:
+  Diferencia: {diff_compra:+.2f} Bs
+  Porcentaje: {pct_compra:+.1f}%
+
+━━━━━━━━━━━━━━━━━━━━
+💵 *CÁLCULOS DÓLARES A BOLÍVARES (Tasa BCV):*
+{operaciones_usd_bs}
+
+🇻🇪 *CÁLCULOS BOLÍVARES A DÓLARES (Tasa BCV):*
+{operaciones_bs_usd}
+━━━━━━━━━━━━━━━━━━━━
+💡 _Para montos personalizados, usa la opción *"¿Cuánto Es?"* en el menú._"""
+
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 def calcular_ganancia_neta(chat_id, monto=100.0):
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
     if not compra_ves or not tasas: return
-    bcv_mas_medio = tasas['usd'] * 1.005
+    tasa_bcv = tasas['usd']
+    bcv_mas_medio = tasa_bcv * 1.005
     costo_bcv_monto = bcv_mas_medio * monto
     usdt_neto_tarjeta = monto * (1 - 0.015)  
     usdt_final = usdt_neto_tarjeta * (1 - 0.041)  
     retorno_ves = usdt_final * venta_ves
     ganancia_neta_ves = retorno_ves - costo_bcv_monto
     ganancia_porcentaje = (ganancia_neta_ves / costo_bcv_monto) * 100 if costo_bcv_monto > 0 else 0
-    mensaje = f"💵 *CALCULADORA DE RETORNO NETO*\n\nAnálisis financiero detallado basado en un capital de *${monto:,.2f} USD*:\n\n*1. Costo de Intervención (Egreso):*\n• BCV Oficial: {tasas['usd']:.2f} Bs\n• BCV + 0.50%: {bcv_mas_medio:.2f} Bs\n• Total Invertido ({monto:.2f}$): *{costo_bcv_monto:,.2f} Bs*\n\n*2. Liquidación y Comisiones:*\n• Capital base: {monto:.2f} USDT\n• Tarjeta (-1.5%): {usdt_neto_tarjeta:,.2f} USDT\n• Bpay (-4.1%): {usdt_final:,.4f} USDT\n\n*3. Retorno en P2P (Venta VES):*\n• Tasa de Venta: {venta_ves:.2f} Bs\n• Total Retornado: *{retorno_ves:,.2f} Bs*\n\n━━━━━━━━━━━━━━━━━━━━\n📊 *GANANCIA NETA TOTAL:*\n• Retorno Neto: *{ganancia_neta_ves:+,.2f} Bs* ({ganancia_porcentaje:+.2f}%)\n━━━━━━━━━━━━━━━━━━━━"
+    mensaje = f"💵 *CALCULADORA DE RETORNO NETO*\n\nAnálisis financiero detallado basado en un capital de *${monto:,.2f} USD*:\n\n*1. Costo de Intervención (Egreso):*\n• BCV Oficial: {tasa_bcv:.2f} Bs\n• BCV + 0.50%: {bcv_mas_medio:.2f} Bs\n• Total Invertido ({monto:.2f}$): *{costo_bcv_monto:,.2f} Bs*\n\n*2. Liquidación y Comisiones:*\n• Capital base: {monto:.2f} USDT\n• Tarjeta (-1.5%): {usdt_neto_tarjeta:,.2f} USDT\n• Bpay (-4.1%): {usdt_final:,.4f} USDT\n\n*3. Retorno en P2P (Venta VES):*\n• Tasa de Venta: {venta_ves:.2f} Bs\n• Total Retornado: *{retorno_ves:,.2f} Bs*\n\n━━━━━━━━━━━━━━━━━━━━\n📊 *GANANCIA NETA TOTAL:*\n• Retorno Neto: *{ganancia_neta_ves:+,.2f} Bs* ({ganancia_porcentaje:+.2f}%)\n━━━━━━━━━━━━━━━━━━━━"
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 def calcular_conversion_bcv_medio(chat_id, texto_monto):
     tasas = obtener_tasas_bcv()
     if not tasas: return
-    bcv_mas_medio = tasas['usd'] * 1.005
+    tasa_bcv = tasas['usd']
     texto_limpio = texto_monto.strip().lower()
     try:
         if 'bs' in texto_limpio:
             monto_bs = float(texto_limpio.replace('bs', '').replace(',', '.').strip())
-            resultado_usd = monto_bs / bcv_mas_medio
-            mensaje = f"⚖️ *CALCULADORA DE CONVERSIÓN*\n\n📊 *Tasa de Referencia:* BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*\n━━━━━━━━━━━━━━━━━━━━\n✍️ *Operación (Bs ➔ $):* {monto_bs:,.2f} Bs\n🇺🇸 *Total equivalente:* *${resultado_usd:,.2f} USD*\n━━━━━━━━━━━━━━━━━━━━"
+            resultado_usd = monto_bs / tasa_bcv
+            mensaje = f"⚖️ *CALCULADORA DE CONVERSIÓN*\n\n📊 *Tasa BCV Oficial:* *{tasa_bcv:.2f} Bs*\n━━━━━━━━━━━━━━━━━━━━\n✍️ *Operación (Bs ➔ $):* {monto_bs:,.2f} Bs\n🇺🇸 *Total equivalente:* *${resultado_usd:,.2f} USD*\n━━━━━━━━━━━━━━━━━━━━"
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
         elif '$' in texto_limpio or 'usd' in texto_limpio:
             monto_usd = float(texto_limpio.replace('$', '').replace('usd', '').replace(',', '.').strip())
-            resultado_bs = monto_usd * bcv_mas_medio
-            mensaje = f"⚖️ *CALCULADORA DE CONVERSIÓN*\n\n📊 *Tasa de Referencia:* BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*\n━━━━━━━━━━━━━━━━━━━━\n✍️ *Operación ($ ➔ Bs):* ${monto_usd:,.2f} USD\n🇻🇪 *Total equivalente:* *{resultado_bs:,.2f} Bs*\n━━━━━━━━━━━━━━━━━━━━"
+            resultado_bs = monto_usd * tasa_bcv
+            mensaje = f"⚖️ *CALCULADORA DE CONVERSIÓN*\n\n📊 *Tasa BCV Oficial:* *{tasa_bcv:.2f} Bs*\n━━━━━━━━━━━━━━━━━━━━\n✍️ *Operación ($ ➔ Bs):* ${monto_usd:,.2f} USD\n🇻🇪 *Total equivalente:* *{resultado_bs:,.2f} Bs*\n━━━━━━━━━━━━━━━━━━━━"
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
     except: pass
 
@@ -590,7 +623,7 @@ def mostrar_historial_ves(chat_id):
     mensaje = f"📈 *HISTORIAL DE BRECHA VES (24h)*\n📊 *Apertura:* {analisis['apertura']:.2f} Bs\n📊 *Actual:* {analisis['actual']:.2f} Bs\n*Cambio:* {analisis['cambio']:+.2f} Bs ({analisis['cambio_porcentaje']:+.1f}%)\n📈 *Máximo:* {analisis['maximo']:.2f} Bs\n📉 *Mínimo:* {analisis['minimo']:.2f} Bs\n🧭 *Tendencia:* {analisis['tendencia']}"
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== PROCESAR MENSAJES CORREGIDO (ENRUTAMIENTO) ====================
+# ==================== PROCESAR MENSAJES ====================
 
 def procesar_mensaje(chat_id, texto):
     global usuario_esperando_calculo, usuario_esperando_cruzado, usuario_configurando_soles
@@ -637,7 +670,6 @@ def procesar_mensaje(chat_id, texto):
     elif texto == '📈 Historial de brecha VES':
         mostrar_historial_ves(chat_id)
 
-    # --- SUBMENÚ REMESAS (NUEVO REQUERIMIENTO) ---
     elif texto == 'Remesas 💼':
         if chat_id == ADMIN_ID:
             enviar_mensaje(chat_id, "💼 *SUBMENÚ REMESAS & TARIFARIOS MANUALEZ*", crear_teclado_remesas(chat_id))
@@ -663,12 +695,10 @@ def procesar_mensaje(chat_id, texto):
             usuario_configurando_soles[chat_id] = True
             enviar_mensaje(chat_id, f"⚙️ *Tasa Actual:* {TASA_SOLES_TARIFARIO:.2f}\n\n✍️ Envía el nuevo valor (Ej: `3.85`).", crear_teclado_remesas(chat_id))
 
-    # --- BOTÓN DE TASAS CRUZADAS ENLAZADO A TU NUEVA FUNCIÓN VISUAL ---
     elif texto == 'Tasas Cruzadas':
         if chat_id == ADMIN_ID:
             mostrar_tasas_cambio(chat_id)
 
-    # --- SEGUNDO MENÚ (+ OPCIONES) ---
     elif texto == '+ Opciones':
         enviar_mensaje(chat_id, "📋 *SEGUNDO MENÚ (MERCADO P2P)*", crear_teclado_opciones(chat_id))
 
@@ -749,7 +779,6 @@ def mantener_activo():
 @app.route('/')
 def home():
     return f"Bot activo 24/7 | Muestras: {len(historial_ves)}"
-
 if __name__ == "__main__":
     cargar_tasas_anteriores()
     threading.Thread(target=recibir_mensajes, daemon=True).start()

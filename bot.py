@@ -30,11 +30,11 @@ app = Flask(__name__)
 # ==================== TASAS PARA TARIFARIOS Y CONVERSIÓN MANUAL ====================
 TASA_SOLES_TARIFARIO = 3.80
 
-# ==================== ALERTAS DE PRECIO FINANCIERO ====================
+# ==================== ALERTAS DE PRECIO FINANCIERO (ACUMULATIVAS) ====================
 UMBRALES = {
-    'VES': 1.0,    
-    'COP': 50.0,  
-    'PEN': 0.05    
+    'VES': 0.50,    # Notifica cada vez que acumule un cambio de 0.50 Bs
+    'COP': 30.0,  
+    'PEN': 0.03    
 }
 
 FLUCTUACION_UMBRAL = 0.8
@@ -486,34 +486,60 @@ def obtener_analisis_ves():
         'tendencia': tendencia, 'muestras': len(precios)
     }
 
+# ==================== VERIFICAR ALERTAS ACUMULATIVAS (MODIFICADO) ====================
 def verificar_alertas(precios):
     global ultimos_precios
-    if not precios: return
+    if not precios: 
+        return
+        
     usuarios = obtener_usuarios()
-    if not usuarios: return
+    if not usuarios: 
+        return
 
-    for usuario in usuarios:
-        for moneda in ['VES', 'COP', 'PEN']:
-            if moneda not in precios or not precios[moneda]: continue
-            precio_actual = precios[moneda]['compra']
-            if ultimos_precios[moneda] is None:
-                ultimos_precios[moneda] = precio_actual
-                continue
-            cambio = abs(precio_actual - ultimos_precios[moneda])
-            umbral = UMBRALES.get(moneda, 0)
+    for moneda in ['VES', 'COP', 'PEN']:
+        if moneda not in precios or not precios[moneda]: 
+            continue
+            
+        precio_actual = precios[moneda]['compra']
+        
+        # Inicialización de la primera referencia
+        if ultimos_precios[moneda] is None:
+            ultimos_precios[moneda] = precio_actual
+            continue
 
-            if cambio >= umbral:
-                direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
-                emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
-                signo = "+" if precio_actual > ultimos_precios[moneda] else ""
-                cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
-                mensaje = f"\n{emoji} *🔔 ALERTA {moneda}* {emoji}\n\n{direccion} en {signo}{cambio:.2f}\n\n📊 *Detalles:*\n• Anterior: {ultimos_precios[moneda]:.2f}\n• Actual: {precio_actual:.2f}\n• Cambio: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)\n\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
-                enviar_mensaje(usuario, mensaje)
-                time.sleep(0.05)
+        # Calcula la variación acumulada respecto al precio de la última alerta
+        cambio = abs(precio_actual - ultimos_precios[moneda])
+        umbral = UMBRALES.get(moneda, 0)
+
+        # Si el cambio acumulado supera o iguala el umbral, notifica y actualiza la referencia
+        if cambio >= umbral:
+            direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
+            emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
+            signo = "+" if precio_actual > ultimos_precios[moneda] else ""
+            
+            cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
+            
+            mensaje = (
+                f"\n{emoji} *🔔 ALERTA {moneda}* {emoji}\n\n"
+                f"{direccion} en {signo}{cambio:.2f}\n\n"
+                f"📊 *Detalles:*\n"
+                f"• Referencia Anterior: {ultimos_precios[moneda]:.2f}\n"
+                f"• Precio Actual: {precio_actual:.2f}\n"
+                f"• Variación: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)\n\n"
+                f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+            )
+
+            for usuario in usuarios:
+                try:
+                    enviar_mensaje(usuario, mensaje)
+                    time.sleep(0.05)
+                except:
+                    pass
                 if moneda in ['COP', 'PEN']:
-                    enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} processed con éxito.*")
-        for moneda in ['VES', 'COP', 'PEN']:
-            if moneda in precios and precios[moneda]: ultimos_precios[moneda] = precios[moneda]['compra']
+                    enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} procesada con éxito.*")
+
+            # MANTENER LA BASE HASTA QUE VUELVA A VARIAR
+            ultimos_precios[moneda] = precio_actual
 
 def mostrar_precios_usdt(chat_id):
     precios = {}
@@ -537,7 +563,6 @@ def mostrar_precio_individual(chat_id, moneda):
     mensaje += f"🟢 COMPRA: {compra:.2f}\n🔴 VENTA: {venta:.2f}\n📊 Spread: {compra-venta:.2f}\n"
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-# --- FUNCIÓN MODIFICADA SEGÚN INDICACIÓN ESPECÍFICA ---
 def mostrar_tether_vs_bcv(chat_id):
     compra, venta = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
@@ -583,7 +608,6 @@ def calcular_ganancia_neta(chat_id, monto=100.0):
     mensaje = f"💵 *CALCULADORA DE RETORNO NETO*\n\nAnálisis financiero detallado basado en un capital de *${monto:,.2f} USD*:\n\n*1. Costo de Intervención (Egreso):*\n• BCV Oficial: {tasa_bcv:.2f} Bs\n• BCV + 0.50%: {bcv_mas_medio:.2f} Bs\n• Total Invertido ({monto:.2f}$): *{costo_bcv_monto:,.2f} Bs*\n\n*2. Liquidación y Comisiones:*\n• Capital base: {monto:.2f} USDT\n• Tarjeta (-1.5%): {usdt_neto_tarjeta:,.2f} USDT\n• Bpay (-4.1%): {usdt_final:,.4f} USDT\n\n*3. Retorno en P2P (Venta VES):*\n• Tasa de Venta: {venta_ves:.2f} Bs\n• Total Retornado: *{retorno_ves:,.2f} Bs*\n\n━━━━━━━━━━━━━━━━━━━━\n📊 *GANANCIA NETA TOTAL:*\n• Retorno Neto: *{ganancia_neta_ves:+,.2f} Bs* ({ganancia_porcentaje:+.2f}%)\n━━━━━━━━━━━━━━━━━━━━"
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# --- FUNCIÓN MODIFICADA SEGÚN INDICACIÓN ESPECÍFICA ---
 def calcular_conversion_bcv_medio(chat_id, texto_monto):
     tasas = obtener_tasas_bcv()
     if not tasas: return

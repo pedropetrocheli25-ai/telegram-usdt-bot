@@ -47,15 +47,14 @@ def descargar_plantilla_drive(file_id, ruta_local):
 # ==================== TASAS PARA TARIFARIOS Y CONVERSIÓN MANUAL ====================
 TASA_SOLES_TARIFARIO = 3.80
 
-# ==================== ALERTAS DE PRECIO FINANCIERO (ACUMULATIVAS - OPCIÓN B) ====================
+# ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {
-    'VES': 0.50,    # Notifica cada vez que se acumule una diferencia de 0.50 Bs
+    'VES': 0.50,
     'COP': 30.0,  
     'PEN': 0.03    
 }
 
 FLUCTUACION_UMBRAL = 0.8
-
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 
 # ==================== CONTROL DE ACCESO ====================
@@ -85,10 +84,9 @@ usuario_esperando_calculo = {}
 usuario_esperando_cruzado = {}  
 usuario_configurando_soles = {}  
 
-# ==================== INTERFACES DE TECLADOS REORGANIZADAS ====================
+# ==================== INTERFACES DE TECLADOS ====================
 
 def crear_teclado_principal(chat_id):
-    """Menú Principal reorganizado"""
     teclado = [
         ["Tether + BCV"],
         ["¿Cuánto Es?"], 
@@ -103,7 +101,6 @@ def crear_teclado_principal(chat_id):
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_remesas(chat_id):
-    """Submenú Remesas"""
     teclado = [
         ["¿Cuánto es Cruzado?"],
         ["📋 Tarifario USD"],
@@ -115,7 +112,6 @@ def crear_teclado_remesas(chat_id):
     return {"keyboard": teclado, "resize_keyboard": True}
 
 def crear_teclado_opciones(chat_id):
-    """Segundo Menú (+ Opciones)"""
     teclado = [
         ["Precio USDT"],
         ["Precio VES"],
@@ -250,37 +246,47 @@ def obtener_tasas_bcv():
         pass
     return None
 
-# ==================== GENERACIÓN DE IMAGEN TARIFARIO ====================
+# ==================== GENERACIÓN DE IMAGEN TARIFARIO CORREGIDA ====================
 
-def generar_tarifario(plantilla_path, output_path, tasa_soles, tasa_bcv, col2_valores, col3_valores):
-    """Genera la imagen del tarifario superponiendo los datos sobre la plantilla correspondiente."""
+def generar_tarifario(plantilla_path, output_path, tasa_soles, tasa_bcv, col1_valores, col2_valores, col3_valores):
+    """Genera la imagen alineando las 3 columnas y reajustando la cabecera y filas."""
     img = Image.open(plantilla_path).convert("RGB")
     draw = ImageDraw.Draw(img)
 
     try:
-        font_header = ImageFont.truetype("BreeSerif-Regular.ttf", 26)
-        font_cells = ImageFont.truetype("BreeSerif-Regular.ttf", 21)
+        font_header = ImageFont.truetype("BreeSerif-Regular.ttf", 24)
+        font_cells = ImageFont.truetype("BreeSerif-Regular.ttf", 19)
     except Exception:
         try:
-            font_header = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
-            font_cells = ImageFont.truetype("DejaVuSans-Bold.ttf", 21)
+            font_header = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
+            font_cells = ImageFont.truetype("DejaVuSans-Bold.ttf", 19)
         except Exception:
             font_header = ImageFont.load_default()
             font_cells = ImageFont.load_default()
 
-    # Encabezados Azules
-    draw.text((140, 268), str(tasa_soles), fill=(255, 255, 255), font=font_header, anchor="mm")
-    draw.text((422, 268), str(tasa_bcv), fill=(255, 255, 255), font=font_header, anchor="mm")
+    # 1. Cabeceras Azules (Tasa Soles y Tasa BCV)
+    draw.text((135, 230), str(tasa_soles), fill=(255, 255, 255), font=font_header, anchor="mm")
+    draw.text((385, 230), str(tasa_bcv), fill=(255, 255, 255), font=font_header, anchor="mm")
 
-    # Coordenadas Y para las 10 filas
-    filas_y = [372, 429, 486, 544, 601, 659, 716, 774, 832, 889]
+    # 2. Coordenadas X para las 3 columnas
+    x_col1 = 110  # Columna 1: EQUIVALENTE / BASE ($ / S/)
+    x_col2 = 270  # Columna 2: RECIBES (Bs)
+    x_col3 = 425  # Columna 3: ENVÍAS
 
-    for i in range(min(len(filas_y), len(col2_valores))):
-        y = filas_y[i]
-        # Columna 2: RECIBES (Centro X = 276)
-        draw.text((276, y), str(col2_valores[i]), fill=(20, 20, 20), font=font_cells, anchor="mm")
-        # Columna 3: ENVÍAS / DÓLARES (Centro X = 455)
-        draw.text((455, y), str(col3_valores[i]), fill=(20, 20, 20), font=font_cells, anchor="mm")
+    # 3. Posición inicial Y y espacio vertical entre filas
+    y_start = 368
+    y_step = 52
+
+    # 4. Dibujar las 10 filas de la tabla
+    for i in range(min(10, len(col1_valores))):
+        y_pos = y_start + (i * y_step)
+        
+        # Columna 1 ($ / S/)
+        draw.text((x_col1, y_pos), str(col1_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
+        # Columna 2 (RECIBES Bs)
+        draw.text((x_col2, y_pos), str(col2_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
+        # Columna 3 (ENVÍAS / EQUIVALENTE)
+        draw.text((x_col3, y_pos), str(col3_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
 
     img.save(output_path, quality=100)
     return output_path
@@ -289,11 +295,12 @@ def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     dolares_lista = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
     
-    recibes_bs = [f"{usd * tasa_bcv:,.2f}" for usd in dolares_lista]
-    envias_usd = [f"{usd:,.2f}$" for usd in dolares_lista]
+    col1_usd = [f"{usd}$" for usd in dolares_lista]
+    col2_recibes_bs = [f"{usd * tasa_bcv:,.2f}" for usd in dolares_lista]
+    col3_envias_soles = [f"{(usd * tasa_bcv) / TASA_SOLES_TARIFARIO:,.2f} S/" if TASA_SOLES_TARIFARIO > 0 else "0.00 S/" for usd in dolares_lista]
 
     plantilla = "plantilla_usd.png"
-    output = f"tarifario_usd_{chat_id}.png"
+    output = f"tarifario_usd_{chat_id}_{int(time.time())}.png"
 
     if descargar_plantilla_drive(ID_DRIVE_USD, plantilla):
         try:
@@ -302,8 +309,9 @@ def mostrar_tarifario_usd(chat_id):
                 output_path=output,
                 tasa_soles=f"{TASA_SOLES_TARIFARIO:.2f}",
                 tasa_bcv=f"{tasa_bcv:.2f}",
-                col2_valores=recibes_bs,
-                col3_valores=envias_usd
+                col1_valores=col1_usd,
+                col2_valores=col2_recibes_bs,
+                col3_valores=col3_envias_soles
             )
             caption = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs"
             if enviar_imagen(chat_id, output, caption=caption, teclado=crear_teclado_remesas(chat_id)):
@@ -312,7 +320,7 @@ def mostrar_tarifario_usd(chat_id):
         except Exception as e:
             print("Error generando gráfico USD:", e)
 
-    # Fallback Texto si la descarga o generación falla
+    # Fallback Texto si falla la descarga o renderizado
     mensaje = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
     for usd in dolares_lista:
         recibes_val = usd * tasa_bcv
@@ -325,11 +333,12 @@ def mostrar_tarifario_soles(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     soles_lista = [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
 
-    recibes_bs = [f"{soles * TASA_SOLES_TARIFARIO:,.2f}" for soles in soles_lista]
-    dolares_equiv = [f"{(soles * TASA_SOLES_TARIFARIO) / tasa_bcv:,.2f}$" if tasa_bcv > 0 else "0.00$" for soles in soles_lista]
+    col1_soles = [f"{soles} S/" for soles in soles_lista]
+    col2_recibes_bs = [f"{soles * TASA_SOLES_TARIFARIO:,.2f}" for soles in soles_lista]
+    col3_dolares_equiv = [f"{(soles * TASA_SOLES_TARIFARIO) / tasa_bcv:,.2f}$" if tasa_bcv > 0 else "0.00$" for soles in soles_lista]
 
     plantilla = "plantilla_soles.png"
-    output = f"tarifario_soles_{chat_id}.png"
+    output = f"tarifario_soles_{chat_id}_{int(time.time())}.png"
 
     if descargar_plantilla_drive(ID_DRIVE_SOLES, plantilla):
         try:
@@ -338,8 +347,9 @@ def mostrar_tarifario_soles(chat_id):
                 output_path=output,
                 tasa_soles=f"{TASA_SOLES_TARIFARIO:.2f}",
                 tasa_bcv=f"{tasa_bcv:.2f}",
-                col2_valores=recibes_bs,
-                col3_valores=dolares_equiv
+                col1_valores=col1_soles,
+                col2_valores=col2_recibes_bs,
+                col3_valores=col3_dolares_equiv
             )
             caption = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}"
             if enviar_imagen(chat_id, output, caption=caption, teclado=crear_teclado_remesas(chat_id)):
@@ -348,7 +358,7 @@ def mostrar_tarifario_soles(chat_id):
         except Exception as e:
             print("Error generando gráfico Soles:", e)
 
-    # Fallback Texto si la descarga o generación falla
+    # Fallback Texto si falla
     mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
     for soles in soles_lista:
         recibes_val = soles * TASA_SOLES_TARIFARIO
@@ -576,7 +586,7 @@ def obtener_analisis_ves():
         'tendencia': tendencia, 'muestras': len(precios)
     }
 
-# ==================== VERIFICAR ALERTAS ACUMULATIVAS (OPCIÓN B) ====================
+# ==================== VERIFICAR ALERTAS ACUMULATIVAS ====================
 def verificar_alertas(precios):
     global ultimos_precios
     if not precios: 
@@ -592,16 +602,13 @@ def verificar_alertas(precios):
             
         precio_actual = precios[moneda]['compra']
         
-        # Inicialización de la primera referencia
         if ultimos_precios[moneda] is None:
             ultimos_precios[moneda] = precio_actual
             continue
 
-        # Calcula la variación acumulada respecto al precio de la última alerta
         cambio = abs(precio_actual - ultimos_precios[moneda])
         umbral = UMBRALES.get(moneda, 0)
 
-        # Si el cambio acumulado supera o iguala el umbral, notifica y actualiza la referencia
         if cambio >= umbral:
             direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
             emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
@@ -626,7 +633,6 @@ def verificar_alertas(precios):
                 except:
                     pass
 
-            # MANTENER LA BASE HASTA QUE VUELVA A VARIAR
             ultimos_precios[moneda] = precio_actual
 
 def mostrar_precios_usdt(chat_id):
@@ -764,7 +770,6 @@ def procesar_mensaje(chat_id, texto):
     if not usuario_esta_en_grupo(chat_id): return
     guardar_usuario(chat_id)
 
-    # Captura de configuración de tasa soles manual
     if chat_id == ADMIN_ID and usuario_configurando_soles.get(chat_id):
         try:
             TASA_SOLES_TARIFARIO = float(texto.replace(',', '.'))
@@ -773,7 +778,6 @@ def procesar_mensaje(chat_id, texto):
             return
         except ValueError: pass  
 
-    # Gestión numérica en mensajes abiertos
     if any(char.isdigit() for char in texto):
         if usuario_esperando_cruzado.get(chat_id) or 's/' in texto.lower() or 'soles' in texto.lower():
             calcular_conversion_tasas_cruzadas(chat_id, texto)
@@ -783,7 +787,6 @@ def procesar_mensaje(chat_id, texto):
             usuario_esperando_calculo[chat_id] = False
             return
 
-    # --- ENRUTAMIENTO DE BOTONES Y ENTRADAS ---
     if texto == '/start':
         usuario_configurando_soles[chat_id] = False
         enviar_mensaje(chat_id, "Bienvenido a Asistente Remesas P2P.", crear_teclado_principal(chat_id))

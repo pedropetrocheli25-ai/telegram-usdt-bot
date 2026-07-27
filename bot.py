@@ -27,6 +27,24 @@ URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 
 app = Flask(__name__)
 
+# ==================== PLANTILLAS GOOGLE DRIVE ====================
+URL_DRIVE_SOLES = "https://drive.google.com/uc?export=download&id=1wt366XOcPAZ_TiQYYgcxvNxtNhvhAxY3"
+URL_DRIVE_USD = "https://drive.google.com/uc?export=download&id=18gq0V7QqO_YFjY6hEdzzwZ2y-OrMpdJe"
+
+def descargar_plantilla_drive(url_drive, ruta_local):
+    """Descarga la plantilla desde Google Drive si no existe localmente."""
+    if not os.path.exists(ruta_local):
+        try:
+            r = requests.get(url_drive, timeout=15)
+            if r.status_code == 200:
+                with open(ruta_local, 'wb') as f:
+                    f.write(r.content)
+                return True
+        except Exception as e:
+            print(f"Error descargando plantilla desde Drive ({ruta_local}):", e)
+            return False
+    return True
+
 # ==================== TASAS PARA TARIFARIOS Y CONVERSIÓN MANUAL ====================
 TASA_SOLES_TARIFARIO = 3.80
 
@@ -233,7 +251,7 @@ def obtener_tasas_bcv():
         pass
     return None
 
-# ==================== GENERACIÓN DE IMAGEN TARIFARIO (DOS PLANTILLAS) ====================
+# ==================== GENERACIÓN DE IMAGEN TARIFARIO ====================
 
 def generar_tarifario(plantilla_path, output_path, tasa_soles, tasa_bcv, col2_valores, col3_valores):
     """Genera la imagen del tarifario superponiendo los datos sobre la plantilla correspondiente."""
@@ -276,7 +294,8 @@ def mostrar_tarifario_usd(chat_id):
     plantilla = "plantilla_usd.png"
     output = f"tarifario_usd_{chat_id}.png"
 
-    if os.path.exists(plantilla):
+    # Se descarga desde Drive si no está en local
+    if descargar_plantilla_drive(URL_DRIVE_USD, plantilla):
         try:
             generar_tarifario(
                 plantilla_path=plantilla,
@@ -293,7 +312,7 @@ def mostrar_tarifario_usd(chat_id):
         except Exception as e:
             print("Error generando gráfico USD:", e)
 
-    # Fallback Texto si no existe la imagen
+    # Fallback Texto si no se pudo descargar la imagen
     mensaje = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
     for usd in dolares_lista:
         recibes_val = usd * tasa_bcv
@@ -314,7 +333,8 @@ def mostrar_tarifario_soles(chat_id):
     plantilla = "plantilla_soles.png"
     output = f"tarifario_soles_{chat_id}.png"
 
-    if os.path.exists(plantilla):
+    # Se descarga desde Drive si no está en local
+    if descargar_plantilla_drive(URL_DRIVE_SOLES, plantilla):
         try:
             generar_tarifario(
                 plantilla_path=plantilla,
@@ -331,7 +351,7 @@ def mostrar_tarifario_soles(chat_id):
         except Exception as e:
             print("Error generando gráfico Soles:", e)
 
-    # Fallback Texto si no existe la imagen
+    # Fallback Texto si no se pudo descargar la imagen
     mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
     for soles in soles_lista:
         recibes_val = soles * TASA_SOLES_TARIFARIO

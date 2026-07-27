@@ -5,7 +5,8 @@ import threading
 import json
 from datetime import datetime
 from collections import deque
-from flask import Flask
+from flask import Flask, request
+from PIL import Image, ImageDraw, ImageFont
 
 # ==================== CONFIGURACIÓN ====================
 os.environ['TZ'] = 'America/Caracas'
@@ -23,16 +24,15 @@ if not TOKEN or not ADMIN_ID:
 
 ADMIN_ID = int(ADMIN_ID)
 URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
-ultimo_update_id = 0
 
 app = Flask(__name__)
 
 # ==================== TASAS PARA TARIFARIOS Y CONVERSIÓN MANUAL ====================
 TASA_SOLES_TARIFARIO = 3.80
 
-# ==================== ALERTAS DE PRECIO FINANCIERO (ACUMULATIVAS) ====================
+# ==================== ALERTAS DE PRECIO FINANCIERO (ACUMULATIVAS - OPCIÓN B) ====================
 UMBRALES = {
-    'VES': 0.50,    # Notifica cada vez que acumule un cambio de 0.50 Bs
+    'VES': 0.50,    # Notifica cada vez que se acumule una diferencia de 0.50 Bs
     'COP': 30.0,  
     'PEN': 0.03    
 }
@@ -131,6 +131,20 @@ def enviar_mensaje(chat_id, texto, teclado=None):
     except:
         return False
 
+def enviar_imagen(chat_id, imagen_path, caption="", teclado=None):
+    try:
+        url = URL_TELEGRAM + "sendPhoto"
+        with open(imagen_path, "rb") as img:
+            files = {"photo": img}
+            data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
+            if teclado:
+                data["reply_markup"] = json.dumps(teclado)
+            response = requests.post(url, data=data, files=files, timeout=15)
+            return response.status_code == 200
+    except Exception as e:
+        print("Error enviando imagen:", e)
+        return False
+
 # ==================== OBTENCIÓN P2P Y BCV ====================
 
 def obtener_precios_con_cache(fiat):
@@ -219,55 +233,112 @@ def obtener_tasas_bcv():
         pass
     return None
 
-# ==================== TARIFARIOS UNIFICADOS ====================
+# ==================== GENERACIÓN DE IMAGEN TARIFARIO (DOS PLANTILLAS) ====================
+
+def generar_tarifario(plantilla_path, output_path, tasa_soles, tasa_bcv, col2_valores, col3_valores):
+    """Genera la imagen del tarifario superponiendo los datos sobre la plantilla correspondiente."""
+    img = Image.open(plantilla_path).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    try:
+        font_header = ImageFont.truetype("BreeSerif-Regular.ttf", 26)
+        font_cells = ImageFont.truetype("BreeSerif-Regular.ttf", 21)
+    except OSError:
+        font_header = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
+        font_cells = ImageFont.truetype("DejaVuSans-Bold.ttf", 21)
+
+    # Encabezados Azules
+    draw.text((140, 268), str(tasa_soles), fill=(255, 255, 255), font=font_header, anchor="mm")
+    draw.text((422, 268), str(tasa_bcv), fill=(255, 255, 255), font=font_header, anchor="mm")
+
+    # Coordenadas Y para las 10 filas
+    filas_y = [372, 429, 486, 544, 601, 659, 716, 774, 832, 889]
+
+    for i in range(min(len(filas_y), len(col2_valores))):
+        y = filas_y[i]
+        # Columna 2: RECIBES (Centro X = 276)
+        draw.text((276, y), str(col2_valores[i]), fill=(20, 20, 20), font=font_cells, anchor="mm")
+        # Columna 3: ENVÍAS / DÓLARES (Centro X = 455)
+        draw.text((455, y), str(col3_valores[i]), fill=(20, 20, 20), font=font_cells, anchor="mm")
+
+    img.save(output_path, quality=100)
+    return output_path
 
 def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
-    mensaje = f"📋 *TARIFARIO EN USD*\n"
-    mensaje += f"🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
+    dolares_lista = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
+    
+    # Columna 2 -> RECIBES (Bs)
+    recibes_bs = [f"{usd * tasa_bcv:,.2f}" for usd in dolares_lista]
+    # Columna 3 -> ENVÍAS ($)
+    envias_usd = [f"{usd:,.2f}$" for usd in dolares_lista]
 
-    tabla = f"```\n"
-    tabla += f"{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
-    tabla += f"---------------------------------\n"
+    plantilla = "plantilla_usd.png"
+    output = f"tarifario_usd_{chat_id}.png"
 
-    montos_usd = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
+    if os.path.exists(plantilla):
+        try:
+            generar_tarifario(
+                plantilla_path=plantilla,
+                output_path=output,
+                tasa_soles=f"{TASA_SOLES_TARIFARIO:.2f}",
+                tasa_bcv=f"{tasa_bcv:.2f}",
+                col2_valores=recibes_bs,
+                col3_valores=envias_usd
+            )
+            caption = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs"
+            if enviar_imagen(chat_id, output, caption=caption, teclado=crear_teclado_remesas(chat_id)):
+                if os.path.exists(output): os.remove(output)
+                return
+        except Exception as e:
+            print("Error generando gráfico USD:", e)
 
-    for usd in montos_usd:
-        recibes_bs = usd * tasa_bcv
-        equiv_soles = recibes_bs / TASA_SOLES_TARIFARIO if TASA_SOLES_TARIFARIO > 0 else 0
-
-        col_usd = f"{usd}$".ljust(9)
-        col_bs = f"{recibes_bs:,.2f}".ljust(14)
-        col_soles = f"{equiv_soles:,.2f} S/".ljust(12)
-
-        tabla += f"{col_usd}|{col_bs}|{col_soles}\n"
-
-    tabla += f"```"
-    enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_remesas(chat_id))
+    # Fallback Texto si no existe la imagen
+    mensaje = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
+    for usd in dolares_lista:
+        recibes_val = usd * tasa_bcv
+        equiv_soles = recibes_val / TASA_SOLES_TARIFARIO if TASA_SOLES_TARIFARIO > 0 else 0
+        mensaje += f"{f'{usd}$'.ljust(9)}|{f'{recibes_val:,.2f}'.ljust(14)}|{f'{equiv_soles:,.2f} S/'.ljust(12)}\n"
+    mensaje += "```"
+    enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
 
 def mostrar_tarifario_soles(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
-    mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n"
-    mensaje += f"🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n"
+    soles_lista = [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
 
-    tabla = f"```\n"
-    tabla += f"{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n"
-    tabla += f"---------------------------------\n"
+    # Columna 2 -> RECIBES (Bs)
+    recibes_bs = [f"{soles * TASA_SOLES_TARIFARIO:,.2f}" for soles in soles_lista]
+    # Columna 3 -> DÓLARES (USD equivalente)
+    dolares_equiv = [f"{(soles * TASA_SOLES_TARIFARIO) / tasa_bcv:,.2f}$" if tasa_bcv > 0 else "0.00$" for soles in soles_lista]
 
-    montos_soles = [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
+    plantilla = "plantilla_soles.png"
+    output = f"tarifario_soles_{chat_id}.png"
 
-    for soles in montos_soles:
-        recibes_bs = soles * TASA_SOLES_TARIFARIO
-        equiv_usd = recibes_bs / tasa_bcv if tasa_bcv > 0 else 0
+    if os.path.exists(plantilla):
+        try:
+            generar_tarifario(
+                plantilla_path=plantilla,
+                output_path=output,
+                tasa_soles=f"{TASA_SOLES_TARIFARIO:.2f}",
+                tasa_bcv=f"{tasa_bcv:.2f}",
+                col2_valores=recibes_bs,
+                col3_valores=dolares_equiv
+            )
+            caption = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}"
+            if enviar_imagen(chat_id, output, caption=caption, teclado=crear_teclado_remesas(chat_id)):
+                if os.path.exists(output): os.remove(output)
+                return
+        except Exception as e:
+            print("Error generando gráfico Soles:", e)
 
-        col_soles = f"{soles} S/".ljust(10)
-        col_bs = f"{recibes_bs:,.2f}".ljust(14)
-        col_usd = f"{equiv_usd:,.2f}$".ljust(12)
-
-        tabla += f"{col_soles}|{col_bs}|{col_usd}\n"
-
-    tabla += f"```"
-    enviar_mensaje(chat_id, mensaje + tabla, crear_teclado_remesas(chat_id))
+    # Fallback Texto si no existe la imagen
+    mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
+    for soles in soles_lista:
+        recibes_val = soles * TASA_SOLES_TARIFARIO
+        equiv_usd = recibes_val / tasa_bcv if tasa_bcv > 0 else 0
+        mensaje += f"{f'{soles} S/'.ljust(10)}|{f'{recibes_val:,.2f}'.ljust(14)}|{f'{equiv_usd:,.2f}$'.ljust(12)}\n"
+    mensaje += "```"
+    enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
 
 # ==================== TASAS CRUZADAS ====================
 
@@ -412,7 +483,22 @@ def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
     except ValueError:
         enviar_mensaje(chat_id, "❌ Error al realizar la conversión cruzada. Verifica la cantidad escrita.", crear_teclado_cruzado_rapido(chat_id))
 
-# ==================== RESTO DE FUNCIONES DE CÁLCULO E HISTORIAL ====================
+# ==================== FLUCTUACIÓN E HISTORIAL ====================
+
+with open("tasas_anteriores.json", "w") as f: pass
+ultimas_tasas_cruzadas = {}
+
+def guardar_tasas_anteriores():
+    try:
+        with open("tasas_anteriores.json", 'w') as f: json.dump(ultimas_tasas_cruzadas, f)
+    except: pass
+
+def cargar_tasas_anteriores():
+    global ultimas_tasas_cruzadas
+    try:
+        if os.path.exists("tasas_anteriores.json"):
+            with open("tasas_anteriores.json", 'r') as f: ultimas_tasas_cruzadas = json.load(f)
+    except: pass
 
 def verificar_fluctuacion_tasas():
     global ultimas_tasas_cruzadas
@@ -449,19 +535,6 @@ def verificar_fluctuacion_tasas():
     ultimas_tasas_cruzadas = tasas_actuales.copy()
     guardar_tasas_anteriores()
 
-with open("tasas_anteriores.json", "w") as f: pass
-ultimas_tasas_cruzadas = {}
-def guardar_tasas_anteriores():
-    try:
-        with open("tasas_anteriores.json", 'w') as f: json.dump(ultimas_tasas_cruzadas, f)
-    except: pass
-def cargar_tasas_anteriores():
-    global ultimas_tasas_cruzadas
-    try:
-        if os.path.exists("tasas_anteriores.json"):
-            with open("tasas_anteriores.json", 'r') as f: ultimas_tasas_cruzadas = json.load(f)
-    except: pass
-
 def guardar_historial_ves(precio):
     global precio_apertura_ves
     historial_ves.append(precio)
@@ -486,7 +559,7 @@ def obtener_analisis_ves():
         'tendencia': tendencia, 'muestras': len(precios)
     }
 
-# ==================== VERIFICAR ALERTAS ACUMULATIVAS (MODIFICADO) ====================
+# ==================== VERIFICAR ALERTAS ACUMULATIVAS (OPCIÓN B) ====================
 def verificar_alertas(precios):
     global ultimos_precios
     if not precios: 
@@ -535,8 +608,6 @@ def verificar_alertas(precios):
                     time.sleep(0.05)
                 except:
                     pass
-                if moneda in ['COP', 'PEN']:
-                    enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} procesada con éxito.*")
 
             # MANTENER LA BASE HASTA QUE VUELVA A VARIAR
             ultimos_precios[moneda] = precio_actual
@@ -619,7 +690,6 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
         if 'bs' in texto_limpio:
             monto_bs = float(texto_limpio.replace('bs', '').replace(',', '.').strip())
             
-            # Cálculos
             usd_oficial = monto_bs / tasa_bcv if tasa_bcv > 0 else 0
             usd_mas_medio = monto_bs / bcv_mas_medio if bcv_mas_medio > 0 else 0
             
@@ -641,7 +711,6 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
         elif '$' in texto_limpio or 'usd' in texto_limpio:
             monto_usd = float(texto_limpio.replace('$', '').replace('usd', '').replace(',', '.').strip())
             
-            # Cálculos
             bs_oficial = monto_usd * tasa_bcv
             bs_mas_medio = monto_usd * bcv_mas_medio
             
@@ -773,28 +842,36 @@ def procesar_mensaje(chat_id, texto):
         except ValueError:
             enviar_mensaje(chat_id, "Comando no reconocido.", crear_teclado_principal(chat_id))
 
-# ==================== POLLING & BACKLOGS ====================
+# ==================== RUTAS FLASK Y WEBHOOK ====================
 
-def recibir_mensajes():
-    global ultimo_update_id
-    while True:
-        try:
-            url = URL_TELEGRAM + "getUpdates"
-            params = {'offset': ultimo_update_id + 1, 'timeout': 30}
-            response = requests.get(url, params=params, timeout=35)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ok'):
-                    for update in data.get('result', []):
-                        ultimo_update_id = update.get('update_id', 0)
-                        message = update.get('message')
-                        if message:
-                            chat_id = message.get('chat', {}).get('id')
-                            texto = message.get('text', '')
-                            if chat_id and texto:
-                                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
-            time.sleep(1)
-        except: time.sleep(5)
+@app.route('/', methods=['GET'])
+def home():
+    return f"Bot activo 24/7 | Muestras: {len(historial_ves)}", 200
+
+@app.route(f'/{TOKEN}', methods=['POST'])
+def telegram_webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = json.loads(json_string)
+        
+        message = update.get('message')
+        if message:
+            chat_id = message.get('chat', {}).get('id')
+            texto = message.get('text', '')
+            if chat_id and texto:
+                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
+                
+        return 'OK', 200
+    return 'Forbidden', 403
+
+def configurar_webhook():
+    url_app = "https://telegram-usdt-bot-vf5t.onrender.com"
+    url_set = f"{URL_TELEGRAM}setWebhook?url={url_app}/{TOKEN}"
+    try:
+        r = requests.get(url_set, timeout=10)
+        print("Webhook configurado:", r.json())
+    except Exception as e:
+        print("Error configurando Webhook:", e)
 
 def actualizar_precios():
     global cache_precios, cache_tiempo, ultimos_precios
@@ -814,22 +891,11 @@ def actualizar_precios():
             time.sleep(60)
         except: time.sleep(60)
 
-def mantener_activo():
-    while True:
-        try:
-            url = "https://telegram-usdt-bot-vf5t.onrender.com/"
-            requests.get(url, timeout=10)
-        except: pass
-        time.sleep(300)
-
-@app.route('/')
-def home():
-    return f"Bot activo 24/7 | Muestras: {len(historial_ves)}"
-
 if __name__ == "__main__":
     cargar_tasas_anteriores()
-    threading.Thread(target=recibir_mensajes, daemon=True).start()
+    configurar_webhook()
+    
     threading.Thread(target=actualizar_precios, daemon=True).start()
-    threading.Thread(target=mantener_activo, daemon=True).start()
+    
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

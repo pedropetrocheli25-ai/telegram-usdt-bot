@@ -7,6 +7,7 @@ from datetime import datetime
 from collections import deque
 from flask import Flask, request
 from PIL import Image, ImageDraw, ImageFont
+import gdown
 
 # ==================== CONFIGURACIÓN ====================
 os.environ['TZ'] = 'America/Caracas'
@@ -28,18 +29,16 @@ URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 app = Flask(__name__)
 
 # ==================== PLANTILLAS GOOGLE DRIVE ====================
-URL_DRIVE_SOLES = "https://drive.google.com/uc?export=download&id=1wt366XOcPAZ_TiQYYgcxvNxtNhvhAxY3"
-URL_DRIVE_USD = "https://drive.google.com/uc?export=download&id=18gq0V7QqO_YFjY6hEdzzwZ2y-OrMpdJe"
+ID_DRIVE_SOLES = "1wt366XOcPAZ_TiQYYgcxvNxtNhvhAxY3"
+ID_DRIVE_USD = "18gq0V7QqO_YFjY6hEdzzwZ2y-OrMpdJe"
 
-def descargar_plantilla_drive(url_drive, ruta_local):
-    """Descarga la plantilla desde Google Drive si no existe localmente."""
-    if not os.path.exists(ruta_local):
+def descargar_plantilla_drive(file_id, ruta_local):
+    """Descarga la plantilla directamente desde Google Drive usando gdown."""
+    if not os.path.exists(ruta_local) or os.path.getsize(ruta_local) < 5000:
         try:
-            r = requests.get(url_drive, timeout=15)
-            if r.status_code == 200:
-                with open(ruta_local, 'wb') as f:
-                    f.write(r.content)
-                return True
+            url = f"https://drive.google.com/uc?id={file_id}"
+            gdown.download(url, ruta_local, quiet=True)
+            return os.path.exists(ruta_local) and os.path.getsize(ruta_local) > 5000
         except Exception as e:
             print(f"Error descargando plantilla desde Drive ({ruta_local}):", e)
             return False
@@ -261,9 +260,13 @@ def generar_tarifario(plantilla_path, output_path, tasa_soles, tasa_bcv, col2_va
     try:
         font_header = ImageFont.truetype("BreeSerif-Regular.ttf", 26)
         font_cells = ImageFont.truetype("BreeSerif-Regular.ttf", 21)
-    except OSError:
-        font_header = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
-        font_cells = ImageFont.truetype("DejaVuSans-Bold.ttf", 21)
+    except Exception:
+        try:
+            font_header = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
+            font_cells = ImageFont.truetype("DejaVuSans-Bold.ttf", 21)
+        except Exception:
+            font_header = ImageFont.load_default()
+            font_cells = ImageFont.load_default()
 
     # Encabezados Azules
     draw.text((140, 268), str(tasa_soles), fill=(255, 255, 255), font=font_header, anchor="mm")
@@ -286,16 +289,13 @@ def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     dolares_lista = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
     
-    # Columna 2 -> RECIBES (Bs)
     recibes_bs = [f"{usd * tasa_bcv:,.2f}" for usd in dolares_lista]
-    # Columna 3 -> ENVÍAS ($)
     envias_usd = [f"{usd:,.2f}$" for usd in dolares_lista]
 
     plantilla = "plantilla_usd.png"
     output = f"tarifario_usd_{chat_id}.png"
 
-    # Se descarga desde Drive si no está en local
-    if descargar_plantilla_drive(URL_DRIVE_USD, plantilla):
+    if descargar_plantilla_drive(ID_DRIVE_USD, plantilla):
         try:
             generar_tarifario(
                 plantilla_path=plantilla,
@@ -312,7 +312,7 @@ def mostrar_tarifario_usd(chat_id):
         except Exception as e:
             print("Error generando gráfico USD:", e)
 
-    # Fallback Texto si no se pudo descargar la imagen
+    # Fallback Texto si la descarga o generación falla
     mensaje = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
     for usd in dolares_lista:
         recibes_val = usd * tasa_bcv
@@ -325,16 +325,13 @@ def mostrar_tarifario_soles(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     soles_lista = [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
 
-    # Columna 2 -> RECIBES (Bs)
     recibes_bs = [f"{soles * TASA_SOLES_TARIFARIO:,.2f}" for soles in soles_lista]
-    # Columna 3 -> DÓLARES (USD equivalente)
     dolares_equiv = [f"{(soles * TASA_SOLES_TARIFARIO) / tasa_bcv:,.2f}$" if tasa_bcv > 0 else "0.00$" for soles in soles_lista]
 
     plantilla = "plantilla_soles.png"
     output = f"tarifario_soles_{chat_id}.png"
 
-    # Se descarga desde Drive si no está en local
-    if descargar_plantilla_drive(URL_DRIVE_SOLES, plantilla):
+    if descargar_plantilla_drive(ID_DRIVE_SOLES, plantilla):
         try:
             generar_tarifario(
                 plantilla_path=plantilla,
@@ -351,7 +348,7 @@ def mostrar_tarifario_soles(chat_id):
         except Exception as e:
             print("Error generando gráfico Soles:", e)
 
-    # Fallback Texto si no se pudo descargar la imagen
+    # Fallback Texto si la descarga o generación falla
     mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
     for soles in soles_lista:
         recibes_val = soles * TASA_SOLES_TARIFARIO

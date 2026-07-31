@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 from collections import deque
 from flask import Flask, request
+from PIL import Image, ImageDraw, ImageFont
+import gdown
 
 # ==================== CONFIGURACIÓN ====================
 os.environ['TZ'] = 'America/Caracas'
@@ -16,7 +18,6 @@ except AttributeError:
 
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
-URL_APP = "https://telegram-usdt-bot-vf5t.onrender.com"  # Tu URL pública en Render
 
 if not TOKEN or not ADMIN_ID:
     print("ERROR: TELEGRAM_TOKEN o ADMIN_ID no configurados")
@@ -27,17 +28,36 @@ URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 
 app = Flask(__name__)
 
-# ==================== TASAS Y CONFIGURACIÓN ====================
+# ==================== PLANTILLAS GOOGLE DRIVE ====================
+ID_DRIVE_SOLES = "1wt366XOcPAZ_TiQYYgcxvNxtNhvhAxY3"
+ID_DRIVE_USD = "18gq0V7QqO_YFjY6hEdzzwZ2y-OrMpdJe"
+
+def descargar_plantilla_drive(file_id, ruta_local):
+    """Descarga la plantilla directamente desde Google Drive usando gdown."""
+    if not os.path.exists(ruta_local) or os.path.getsize(ruta_local) < 5000:
+        try:
+            url = f"https://drive.google.com/uc?id={file_id}"
+            gdown.download(url, ruta_local, quiet=True)
+            return os.path.exists(ruta_local) and os.path.getsize(ruta_local) > 5000
+        except Exception as e:
+            print(f"Error descargando plantilla desde Drive ({ruta_local}):", e)
+            return False
+    return True
+
+# ==================== TASAS PARA TARIFARIOS Y CONVERSIÓN MANUAL ====================
 TASA_SOLES_TARIFARIO = 3.80
 
+# ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {
     'VES': 0.50,
     'COP': 30.0,  
     'PEN': 0.03    
 }
+
 FLUCTUACION_UMBRAL = 0.8
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 
+# ==================== CONTROL DE ACCESO ====================
 GRUPO_AUTORIZADO_ID = -5370892602  
 
 def usuario_esta_en_grupo(user_id):
@@ -50,18 +70,21 @@ def guardar_usuario(chat_id):
     if chat_id not in usuarios_activos:
         usuarios_activos.add(chat_id)
 
+# ==================== CACHÉ DE PRECIOS ====================
 cache_precios = {}
 cache_tiempo = {}
 CACHE_DURACION = 30
 
+# ==================== HISTORIAL ====================
 historial_ves = deque(maxlen=1440)
 precio_apertura_ves = None
 
+# ==================== ESTADOS DE ENTRADA ====================
 usuario_esperando_calculo = {} 
 usuario_esperando_cruzado = {}  
 usuario_configurando_soles = {}  
 
-# ==================== TECLADOS Y MENÚS ====================
+# ==================== INTERFACES DE TECLADOS ====================
 
 def crear_teclado_principal(chat_id):
     teclado = [
@@ -70,8 +93,10 @@ def crear_teclado_principal(chat_id):
         ["¿Cuánto Gané?"],
         ["📈 Historial de brecha VES"]
     ]
+
     if chat_id == ADMIN_ID:
         teclado.append(["Remesas 💼"])
+
     teclado.append(["+ Opciones"])
     return {"keyboard": teclado, "resize_keyboard": True}
 
@@ -93,8 +118,10 @@ def crear_teclado_opciones(chat_id):
         ["Precio COP"],
         ["Precio PEN"]
     ]
+
     if chat_id == ADMIN_ID:
         teclado.append(["Usuarios Registrados"])
+
     teclado.append(["Volver al menú anterior"])
     return {"keyboard": teclado, "resize_keyboard": True}
 
@@ -117,11 +144,26 @@ def enviar_mensaje(chat_id, texto, teclado=None):
     except:
         return False
 
+def enviar_imagen(chat_id, imagen_path, caption="", teclado=None):
+    try:
+        url = URL_TELEGRAM + "sendPhoto"
+        with open(imagen_path, "rb") as img:
+            files = {"photo": img}
+            data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
+            if teclado:
+                data["reply_markup"] = json.dumps(teclado)
+            response = requests.post(url, data=data, files=files, timeout=15)
+            return response.status_code == 200
+    except Exception as e:
+        print("Error enviando imagen:", e)
+        return False
+
 # ==================== OBTENCIÓN P2P Y BCV ====================
 
 def obtener_precios_con_cache(fiat):
     global cache_precios, cache_tiempo
     ahora = time.time()
+
     if fiat in cache_precios and fiat in cache_tiempo:
         if ahora - cache_tiempo[fiat] < CACHE_DURACION:
             return cache_precios[fiat]['compra'], cache_precios[fiat]['venta']
@@ -145,9 +187,15 @@ def obtener_precios_p2p_reales(fiat):
             if r.status_code == 200:
                 result = r.json()
                 if result.get('data'):
-                    precios = [float(a['adv']['price']) for a in result['data'] if 1 < float(a['adv']['price']) < 100000]
-                    if precios: compra = min(precios)
-        except: pass
+                    precios = []
+                    for a in result['data']:
+                        p = float(a['adv']['price'])
+                        if 1 < p < 100000:
+                            precios.append(p)
+                    if precios:
+                        compra = min(precios)
+        except:
+            pass
 
         data = {"asset": "USDT", "fiat": fiat, "tradeType": "BUY", "page": 1, "rows": 10, "payTypes": []}
         venta = None
@@ -156,18 +204,28 @@ def obtener_precios_p2p_reales(fiat):
             if r.status_code == 200:
                 result = r.json()
                 if result.get('data'):
-                    precios = [float(a['adv']['price']) for a in result['data'] if 1 < float(a['adv']['price']) < 100000]
-                    if precios: venta = max(precios)
-        except: pass
+                    precios = []
+                    for a in result['data']:
+                        p = float(a['adv']['price'])
+                        if 1 < p < 100000:
+                            precios.append(p)
+                    if precios:
+                        venta = max(precios)
+        except:
+            pass
 
-        if compra is None or venta is None: return None, None
-        if compra < venta: compra, venta = venta, compra
+        if compra is None or venta is None:
+            return None, None
+        if compra < venta:
+            compra, venta = venta, compra
         return compra, venta
-    except: return None, None
+    except:
+        return None, None
 
 def obtener_tasa_bcv_actual():
     tasas = obtener_tasas_bcv()
-    if tasas and tasas.get('usd'): return tasas['usd']
+    if tasas and tasas.get('usd'):
+        return tasas['usd']
     return 45.00 
 
 def obtener_tasas_bcv():
@@ -184,96 +242,331 @@ def obtener_tasas_bcv():
                     'eur': usd * eur if eur > 0 else usd * 0.92,
                     'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
-    except: pass
+    except:
+        pass
     return None
 
-# ==================== OPERACIONES Y LÓGICA DE CÁLCULO ====================
+# ==================== GENERACIÓN DE IMAGEN TARIFARIO ====================
+
+def generar_tarifario(plantilla_path, output_path, tasa_soles, tasa_bcv, col1_valores, col2_valores, col3_valores):
+    """Genera la imagen alineando las 3 columnas y reajustando la cabecera y filas."""
+    img = Image.open(plantilla_path).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    try:
+        font_header = ImageFont.truetype("BreeSerif-Regular.ttf", 24)
+        font_cells = ImageFont.truetype("BreeSerif-Regular.ttf", 19)
+    except Exception:
+        try:
+            font_header = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
+            font_cells = ImageFont.truetype("DejaVuSans-Bold.ttf", 19)
+        except Exception:
+            font_header = ImageFont.load_default()
+            font_cells = ImageFont.load_default()
+
+    # 1. Cabeceras Azules (Tasa Soles y Tasa BCV)
+    draw.text((135, 230), str(tasa_soles), fill=(255, 255, 255), font=font_header, anchor="mm")
+    draw.text((385, 230), str(tasa_bcv), fill=(255, 255, 255), font=font_header, anchor="mm")
+
+    # 2. Coordenadas X para las 3 columnas
+    x_col1 = 110  # Columna 1: EQUIVALENTE / BASE ($ / S/)
+    x_col2 = 270  # Columna 2: RECIBES (Bs)
+    x_col3 = 425  # Columna 3: ENVÍAS
+
+    # 3. Posición inicial Y y espacio vertical entre filas
+    y_start = 368
+    y_step = 52
+
+    # 4. Dibujar las 10 filas de la tabla
+    for i in range(min(10, len(col1_valores))):
+        y_pos = y_start + (i * y_step)
+        
+        # Columna 1 ($ / S/)
+        draw.text((x_col1, y_pos), str(col1_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
+        # Columna 2 (RECIBES Bs)
+        draw.text((x_col2, y_pos), str(col2_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
+        # Columna 3 (ENVÍAS / EQUIVALENTE)
+        draw.text((x_col3, y_pos), str(col3_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
+
+    img.save(output_path, quality=100)
+    return output_path
 
 def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
+    dolares_lista = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
+    
+    col1_usd = [f"{usd}$" for usd in dolares_lista]
+    col2_recibes_bs = [f"{usd * tasa_bcv:,.2f}" for usd in dolares_lista]
+    col3_envias_soles = [f"{(usd * tasa_bcv) / TASA_SOLES_TARIFARIO:,.2f} S/" if TASA_SOLES_TARIFARIO > 0 else "0.00 S/" for usd in dolares_lista]
+
+    plantilla = "plantilla_usd.png"
+    output = f"tarifario_usd_{chat_id}_{int(time.time())}.png"
+
+    if descargar_plantilla_drive(ID_DRIVE_USD, plantilla):
+        try:
+            generar_tarifario(
+                plantilla_path=plantilla,
+                output_path=output,
+                tasa_soles=f"{TASA_SOLES_TARIFARIO:.2f}",
+                tasa_bcv=f"{tasa_bcv:.2f}",
+                col1_valores=col1_usd,
+                col2_valores=col2_recibes_bs,
+                col3_valores=col3_envias_soles
+            )
+            caption = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs"
+            if enviar_imagen(chat_id, output, caption=caption, teclado=crear_teclado_remesas(chat_id)):
+                if os.path.exists(output): os.remove(output)
+                return
+        except Exception as e:
+            print("Error generando gráfico USD:", e)
+
+    # Fallback Texto si falla la descarga o renderizado
     mensaje = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
-    for usd in [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]:
-        recibes_bs = usd * tasa_bcv
-        equiv_soles = recibes_bs / TASA_SOLES_TARIFARIO if TASA_SOLES_TARIFARIO > 0 else 0
-        mensaje += f"{f'{usd}$'.ljust(9)}|{f'{recibes_bs:,.2f}'.ljust(14)}|{f'{equiv_soles:,.2f} S/'.ljust(12)}\n"
+    for usd in dolares_lista:
+        recibes_val = usd * tasa_bcv
+        equiv_soles = recibes_val / TASA_SOLES_TARIFARIO if TASA_SOLES_TARIFARIO > 0 else 0
+        mensaje += f"{f'{usd}$'.ljust(9)}|{f'{recibes_val:,.2f}'.ljust(14)}|{f'{equiv_soles:,.2f} S/'.ljust(12)}\n"
     mensaje += "```"
     enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
 
 def mostrar_tarifario_soles(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
+    soles_lista = [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
+
+    col1_soles = [f"{soles} S/" for soles in soles_lista]
+    col2_recibes_bs = [f"{soles * TASA_SOLES_TARIFARIO:,.2f}" for soles in soles_lista]
+    col3_dolares_equiv = [f"{(soles * TASA_SOLES_TARIFARIO) / tasa_bcv:,.2f}$" if tasa_bcv > 0 else "0.00$" for soles in soles_lista]
+
+    plantilla = "plantilla_soles.png"
+    output = f"tarifario_soles_{chat_id}_{int(time.time())}.png"
+
+    if descargar_plantilla_drive(ID_DRIVE_SOLES, plantilla):
+        try:
+            generar_tarifario(
+                plantilla_path=plantilla,
+                output_path=output,
+                tasa_soles=f"{TASA_SOLES_TARIFARIO:.2f}",
+                tasa_bcv=f"{tasa_bcv:.2f}",
+                col1_valores=col1_soles,
+                col2_valores=col2_recibes_bs,
+                col3_valores=col3_dolares_equiv
+            )
+            caption = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}"
+            if enviar_imagen(chat_id, output, caption=caption, teclado=crear_teclado_remesas(chat_id)):
+                if os.path.exists(output): os.remove(output)
+                return
+        except Exception as e:
+            print("Error generando gráfico Soles:", e)
+
+    # Fallback Texto si falla
     mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
-    for soles in [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]:
-        recibes_bs = soles * TASA_SOLES_TARIFARIO
-        equiv_usd = recibes_bs / tasa_bcv if tasa_bcv > 0 else 0
-        mensaje += f"{f'{soles} S/'.ljust(10)}|{f'{recibes_bs:,.2f}'.ljust(14)}|{f'{equiv_usd:,.2f}$'.ljust(12)}\n"
+    for soles in soles_lista:
+        recibes_val = soles * TASA_SOLES_TARIFARIO
+        equiv_usd = recibes_val / tasa_bcv if tasa_bcv > 0 else 0
+        mensaje += f"{f'{soles} S/'.ljust(10)}|{f'{recibes_val:,.2f}'.ljust(14)}|{f'{equiv_usd:,.2f}$'.ljust(12)}\n"
     mensaje += "```"
     enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
+
+# ==================== TASAS CRUZADAS ====================
 
 def calcular_tasas_cruzadas():
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     compra_cop, venta_cop = obtener_precios_con_cache('COP')
     compra_pen, venta_pen = obtener_precios_con_cache('PEN')
-    if not all([compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]): return None
+
+    if not all([compra_ves, venta_ves, compra_cop, venta_cop, compra_pen, venta_pen]):
+        return None
+
     tasas = {}
+
+    # PERÚ (PEN)
     tasas['Perú → Venezuela'] = (venta_ves / compra_pen) * 0.95
     tasas['Venezuela → Perú'] = tasas['Perú → Venezuela'] + 15
-    tasas['Perú → Colombia'] = (1 / (compra_pen / venta_cop)) * 0.95 if compra_pen and venta_cop else 0
+    if compra_pen and venta_cop:
+        tasas['Perú → Colombia'] = (1 / (compra_pen / venta_cop)) * 0.95
+    else:
+        tasas['Perú → Colombia'] = 0
     tasas['Colombia → Perú'] = (compra_cop / venta_pen) * 1.06
+
+    # COLOMBIA (COP)
     tasas['Colombia → Venezuela'] = (compra_cop / venta_ves) * 1.06
-    tasas['Venezuela → Colombia'] = (1 / (compra_ves / venta_cop)) * 0.95 if compra_ves and venta_cop else 0
+    if compra_ves and venta_cop:
+        tasas['Venezuela → Colombia'] = (1 / (compra_ves / venta_cop)) * 0.95
+    else:
+        tasas['Venezuela → Colombia'] = 0
     tasas['Colombia → Brasil'] = (compra_cop / 5.10) * 1.06
+
+    # VENEZUELA (VES)
     tasas['Venezuela → Brasil'] = (compra_ves / 5.10) * 1.05
+
     return tasas
 
 def mostrar_tasas_cambio(chat_id):
     tasas = calcular_tasas_cruzadas()
+
     if not tasas:
-        enviar_mensaje(chat_id, "❌ No se pudieron obtener los datos para calcular las tasas", crear_teclado_remesas(chat_id))
+        mensaje = "❌ No se pudieron obtener los datos para calcular las tasas"
+        enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
         return
+
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     compra_cop, venta_cop = obtener_precios_con_cache('COP')
     compra_pen, venta_pen = obtener_precios_con_cache('PEN')
-    mensaje = f"🏦 *TASAS DE CAMBIO CRUZADAS*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-    mensaje += f"📊 *Precios de referencia:*\n  🇻🇪 VES: Compra {compra_ves:.2f} | Venta {venta_ves:.2f}\n  🇨🇴 COP: Compra {compra_cop:.2f} | Venta {venta_cop:.2f}\n  🇵🇪 PEN: Compra {compra_pen:.2f} | Venta {venta_pen:.2f}\n\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n🇵🇪 *PERÚ (PEN)*\n━━━━━━━━━━━━━━━━━━━━\n  → 🇻🇪 Venezuela: {tasas['Perú → Venezuela']:.2f} Bs\n  → 🇨🇴 Colombia: {tasas['Perú → Colombia']:.2f} COP\n\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n🇨🇴 *COLOMBIA (COP)*\n━━━━━━━━━━━━━━━━━━━━\n  → 🇻🇪 Venezuela: {tasas['Colombia → Venezuela']:.2f} Bs\n  → 🇵🇪 Perú: {tasas['Colombia → Perú']:.2f} PEN\n  → 🇧🇷 Brasil: {tasas['Colombia → Brasil']:.2f} BRL\n\n"
-    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n🇻🇪 *VENEZUELA (VES)*\n━━━━━━━━━━━━━━━━━━━━\n  → 🇵🇪 Perú: {tasas['Venezuela → Perú']:.2f} PEN\n  → 🇨🇴 Colombia: {tasas['Venezuela → Colombia']:.2f} COP\n  → 🇧🇷 Brasil: {tasas['Venezuela → Brasil']:.2f} BRL"
+
+    mensaje = f"🏦 *TASAS DE CAMBIO CRUZADAS*\n"
+    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+
+    mensaje += f"📊 *Precios de referencia:*\n"
+    mensaje += f"  🇻🇪 VES: Compra {compra_ves:.2f} | Venta {venta_ves:.2f}\n"
+    mensaje += f"  🇨🇴 COP: Compra {compra_cop:.2f} | Venta {venta_cop:.2f}\n"
+    mensaje += f"  🇵🇪 PEN: Compra {compra_pen:.2f} | Venta {venta_pen:.2f}\n\n"
+
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇵🇪 *PERÚ (PEN)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Perú → Venezuela']:.2f} Bs\n"
+    mensaje += f"  → 🇨🇴 Colombia: {tasas['Perú → Colombia']:.2f} COP\n\n"
+
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇨🇴 *COLOMBIA (COP)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇻🇪 Venezuela: {tasas['Colombia → Venezuela']:.2f} Bs\n"
+    mensaje += f"  → 🇵🇪 Perú: {tasas['Colombia → Perú']:.2f} PEN\n"
+    mensaje += f"  → 🇧🇷 Brasil: {tasas['Colombia → Brasil']:.2f} BRL\n\n"
+
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"🇻🇪 *VENEZUELA (VES)*\n"
+    mensaje += f"━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += f"  → 🇵🇪 Perú: {tasas['Venezuela → Perú']:.2f} PEN\n"
+    mensaje += f"  → 🇨🇴 Colombia: {tasas['Venezuela → Colombia']:.2f} COP\n"
+    mensaje += f"  → 🇧🇷 Brasil: {tasas['Venezuela → Brasil']:.2f} BRL"
+
     enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
+
+# ==================== ¿CUÁNTO ES CRUZADO? ====================
 
 def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
     tasas = obtener_tasas_bcv()
     if not tasas:
         enviar_mensaje(chat_id, "⏳ No se pudo obtener la tasa BCV oficial en este momento.", crear_teclado_remesas(chat_id))
         return
+
     tasa_bcv = tasas['usd']
     texto_limpio = texto_monto.strip().lower()
+
     tasa_peru_ven = TASA_SOLES_TARIFARIO
     tasa_ven_peru = TASA_SOLES_TARIFARIO + 15
+
     try:
         if 's/' in texto_limpio or 'soles' in texto_limpio or 'sol' in texto_limpio:
-            monto_soles = float(texto_limpio.replace('s/', '').replace('soles', '').replace('sol', '').replace(',', '.').strip())
+            monto_str = texto_limpio.replace('s/', '').replace('soles', '').replace('sol', '').replace(',', '.').strip()
+            monto_soles = float(monto_str)
+
             resultado_bs_pv = monto_soles * tasa_peru_ven
             resultado_usd_pv = resultado_bs_pv / tasa_bcv
+
             resultado_bs_vp = monto_soles * tasa_ven_peru
             resultado_usd_vp = resultado_bs_vp / tasa_bcv
-            mensaje = f"📊 *PROCESAMIENTO DINÁMICO DE SOLES*\n\n*Tasa BCV:* {tasa_bcv:.2f} Bs\n*Tasa Perú - Venezuela:* {tasa_peru_ven:.2f}\n*Tasa Venezuela - Perú:* {tasa_ven_peru:.2f}\n━━━━━━━━━━━━━━━━━━━━\n🇵🇪 ➔ 🇻🇪 *Operación Perú - Venezuela:*\n• {monto_soles:,.2f} Soles, Equivalente a *{resultado_bs_pv:,.2f} Bs*, *{resultado_usd_pv:,.2f}$* a tasa BCV\n\n🇻🇪 ➔ 🇵🇪 *Operación Venezuela - Perú:*\n• Para que lleguen {monto_soles:,.2f} Soles se necesita *{resultado_bs_vp:,.2f} Bs*, equivalente a *{resultado_usd_vp:,.2f}$* a tasa BCV\n━━━━━━━━━━━━━━━━━━━━\n🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"
+
+            mensaje = f"""📊 *PROCESAMIENTO DINÁMICO DE SOLES*
+
+*Tasa BCV:* {tasa_bcv:.2f} Bs
+*Tasa Perú - Venezuela:* {tasa_peru_ven:.2f}
+*Tasa Venezuela - Perú:* {tasa_ven_peru:.2f}
+━━━━━━━━━━━━━━━━━━━━
+🇵🇪 ➔ 🇻🇪 *Operación Perú - Venezuela:*
+• {monto_soles:,.2f} Soles, Equivalente a *{resultado_bs_pv:,.2f} Bs*, *{resultado_usd_pv:,.2f}$* a tasa BCV
+
+🇻🇪 ➔ 🇵🇪 *Operación Venezuela - Perú:*
+• Para que lleguen {monto_soles:,.2f} Soles se necesita *{resultado_bs_vp:,.2f} Bs*, equivalente a *{resultado_usd_vp:,.2f}$* a tasa BCV
+━━━━━━━━━━━━━━━━━━━━
+🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_cruzado_rapido(chat_id))
+
         elif 'bs' in texto_limpio:
-            monto_bs = float(texto_limpio.replace('bs', '').replace(',', '.').strip())
+            monto_str = texto_limpio.replace('bs', '').replace(',', '.').strip()
+            monto_bs = float(monto_str)
+
             resultado_usd_bcv = monto_bs / tasa_bcv
             resultado_soles_pv = monto_bs / tasa_peru_ven if tasa_peru_ven > 0 else 0
             resultado_soles_vp = monto_bs / tasa_ven_peru if tasa_ven_peru > 0 else 0
-            mensaje = f"⚖️ *CALCULADORA DE TASAS CRUZADAS (TASA MANUAL)*\n\n*Tasa BCV:* {tasa_bcv:.2f} Bs\n*Tasa Perú - Venezuela (Manual):* {tasa_peru_ven:.2f} | *Tasa Venezuela - Perú:* {tasa_ven_peru:.2f}\n━━━━━━━━━━━━━━━━━━━━\n🇵🇪 ➔ 🇻🇪 *Fórmula Perú - Venezuela:*\n• {monto_bs:,.2f} Bs, *${resultado_usd_bcv:,.2f}$* a tasa BCV, son *{resultado_soles_pv:,.2f} Soles*\n\n🇻🇪 ➔ 🇵🇪 *Fórmula Venezuela - Perú:*\n• Por {monto_bs:,.2f} Bs equivalente a *${resultado_usd_bcv:,.2f}$* a tasa BCV, llegan *{resultado_soles_vp:,.2f} Soles*\n━━━━━━━━━━━━━━━━━━━━\n🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"
+
+            mensaje = f"""⚖️ *CALCULADORA DE TASAS CRUZADAS (TASA MANUAL)*
+
+*Tasa BCV:* {tasa_bcv:.2f} Bs
+*Tasa Perú - Venezuela (Manual):* {tasa_peru_ven:.2f} | *Tasa Venezuela - Perú:* {tasa_ven_peru:.2f}
+━━━━━━━━━━━━━━━━━━━━
+🇵🇪 ➔ 🇻🇪 *Fórmula Perú - Venezuela:*
+• {monto_bs:,.2f} Bs, *${resultado_usd_bcv:,.2f}$* a tasa BCV, son *{resultado_soles_pv:,.2f} Soles*
+
+🇻🇪 ➔ 🇵🇪 *Fórmula Venezuela - Perú:*
+• Por {monto_bs:,.2f} Bs equivalente a *${resultado_usd_bcv:,.2f}$* a tasa BCV, llegan *{resultado_soles_vp:,.2f} Soles*
+━━━━━━━━━━━━━━━━━━━━
+🕐 {datetime.now().strftime('%H:%M:%S')} (Caracas)"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_cruzado_rapido(chat_id))
         else:
-            enviar_mensaje(chat_id, "⚠️ Para cálculos cruzados indica la cantidad añadiendo *S/* o *Bs* al final.", crear_teclado_cruzado_rapido(chat_id))
+            enviar_mensaje(chat_id, "⚠️ Para cálculos cruzados indica la cantidad añadiendo *S/* o *Bs* al final (ejemplo: `100 S/` o `25000 Bs`).", crear_teclado_cruzado_rapido(chat_id))
+
     except ValueError:
         enviar_mensaje(chat_id, "❌ Error al realizar la conversión cruzada. Verifica la cantidad escrita.", crear_teclado_cruzado_rapido(chat_id))
+
+# ==================== FLUCTUACIÓN E HISTORIAL ====================
+
+with open("tasas_anteriores.json", "w") as f: pass
+ultimas_tasas_cruzadas = {}
+
+def guardar_tasas_anteriores():
+    try:
+        with open("tasas_anteriores.json", 'w') as f: json.dump(ultimas_tasas_cruzadas, f)
+    except: pass
+
+def cargar_tasas_anteriores():
+    global ultimas_tasas_cruzadas
+    try:
+        if os.path.exists("tasas_anteriores.json"):
+            with open("tasas_anteriores.json", 'r') as f: ultimas_tasas_cruzadas = json.load(f)
+    except: pass
+
+def verificar_fluctuacion_tasas():
+    global ultimas_tasas_cruzadas
+    tasas_actuales = calcular_tasas_cruzadas()
+    if not tasas_actuales:
+        return
+    if not ultimas_tasas_cruzadas:
+        ultimas_tasas_cruzadas = tasas_actuales.copy()
+        guardar_tasas_anteriores()
+        return
+
+    mensaje = "⚠️ *ALERTA DE FLUCTUACIÓN DE TASAS* ⚠️\n"
+    mensaje += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    hubo_fluctuacion = False
+
+    for clave, valor_actual in tasas_actuales.items():
+        if clave in ultimas_tasas_cruzadas:
+            valor_anterior = ultimas_tasas_cruzadas[clave]
+            if valor_anterior > 0:
+                fluctuacion = abs((valor_actual - valor_anterior) / valor_anterior) * 100
+                if fluctuacion >= FLUCTUACION_UMBRAL:
+                    direccion = "📈 SUBIÓ" if valor_actual > valor_anterior else "📉 BAJÓ"
+                    mensaje += f"• *{clave}*: {direccion} en {fluctuacion:.2f}%\n"
+                    mensaje += f"  Anterior: {valor_anterior:.4f} → Actual: {valor_actual:.4f}\n\n"
+                    hubo_fluctuacion = True
+
+    if hubo_fluctuacion:
+        for usuario in obtener_usuarios():
+            try:
+                enviar_mensaje(usuario, mensaje)
+                time.sleep(0.05)
+            except:
+                pass
+    ultimas_tasas_cruzadas = tasas_actuales.copy()
+    guardar_tasas_anteriores()
 
 def guardar_historial_ves(precio):
     global precio_apertura_ves
     historial_ves.append(precio)
-    if precio_apertura_ves is None: precio_apertura_ves = precio
+    if precio_apertura_ves is None:
+        precio_apertura_ves = precio
 
 def obtener_analisis_ves():
     if not historial_ves: return None
@@ -293,15 +586,22 @@ def obtener_analisis_ves():
         'tendencia': tendencia, 'muestras': len(precios)
     }
 
+# ==================== VERIFICAR ALERTAS ACUMULATIVAS ====================
 def verificar_alertas(precios):
     global ultimos_precios
-    if not precios: return
+    if not precios: 
+        return
+        
     usuarios = obtener_usuarios()
-    if not usuarios: return
+    if not usuarios: 
+        return
 
     for moneda in ['VES', 'COP', 'PEN']:
-        if moneda not in precios or not precios[moneda]: continue
+        if moneda not in precios or not precios[moneda]: 
+            continue
+            
         precio_actual = precios[moneda]['compra']
+        
         if ultimos_precios[moneda] is None:
             ultimos_precios[moneda] = precio_actual
             continue
@@ -313,61 +613,27 @@ def verificar_alertas(precios):
             direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
             emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
             signo = "+" if precio_actual > ultimos_precios[moneda] else ""
+            
             cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
             
-            mensaje = f"\n{emoji} *🔔 ALERTA {moneda}* {emoji}\n\n{direccion} en {signo}{cambio:.2f}\n\n📊 *Detalles:*\n• Referencia Anterior: {ultimos_precios[moneda]:.2f}\n• Precio Actual: {precio_actual:.2f}\n• Variación: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)\n\n🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+            mensaje = (
+                f"\n{emoji} *🔔 ALERTA {moneda}* {emoji}\n\n"
+                f"{direccion} en {signo}{cambio:.2f}\n\n"
+                f"📊 *Detalles:*\n"
+                f"• Referencia Anterior: {ultimos_precios[moneda]:.2f}\n"
+                f"• Precio Actual: {precio_actual:.2f}\n"
+                f"• Variación: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)\n\n"
+                f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+            )
 
             for usuario in usuarios:
                 try:
                     enviar_mensaje(usuario, mensaje)
                     time.sleep(0.05)
-                except: pass
-                if moneda in ['COP', 'PEN']: enviar_mensaje(ADMIN_ID, f"📨 *Alerta {moneda} procesada con éxito.*")
+                except:
+                    pass
 
             ultimos_precios[moneda] = precio_actual
-
-def verificar_fluctuacion_tasas():
-    global ultimas_tasas_cruzadas
-    tasas_actuales = calcular_tasas_cruzadas()
-    if not tasas_actuales: return
-    if not ultimas_tasas_cruzadas:
-        ultimas_tasas_cruzadas = tasas_actuales.copy()
-        guardar_tasas_anteriores()
-        return
-
-    mensaje = f"⚠️ *ALERTA DE FLUCTUACIÓN DE TASAS* ⚠️\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
-    hubo_fluctuacion = False
-
-    for clave, valor_actual in tasas_actuales.items():
-        if clave in ultimas_tasas_cruzadas:
-            valor_anterior = ultimas_tasas_cruzadas[clave]
-            if valor_anterior > 0:
-                fluctuacion = abs((valor_actual - valor_anterior) / valor_anterior) * 100
-                if fluctuacion >= FLUCTUACION_UMBRAL:
-                    direccion = "📈 SUBIÓ" if valor_actual > valor_anterior else "📉 BAJÓ"
-                    mensaje += f"• *{clave}*: {direccion} en {fluctuacion:.2f}%\n  Anterior: {valor_anterior:.4f} → Actual: {valor_actual:.4f}\n\n"
-                    hubo_fluctuacion = True
-
-    if hubo_fluctuacion:
-        for usuario in obtener_usuarios():
-            try:
-                enviar_mensaje(usuario, mensaje)
-                time.sleep(0.05)
-            except: pass
-    ultimas_tasas_cruzadas = tasas_actuales.copy()
-    guardar_tasas_anteriores()
-
-ultimas_tasas_cruzadas = {}
-def guardar_tasas_anteriores():
-    try:
-        with open("tasas_anteriores.json", 'w') as f: json.dump(ultimas_tasas_cruzadas, f)
-    except: pass
-def cargar_tasas_anteriores():
-    global ultimas_tasas_cruzadas
-    try:
-        if os.path.exists("tasas_anteriores.json"):
-            with open("tasas_anteriores.json", 'r') as f: ultimas_tasas_cruzadas = json.load(f)
-    except: pass
 
 def mostrar_precios_usdt(chat_id):
     precios = {}
@@ -387,21 +653,60 @@ def mostrar_precio_individual(chat_id, moneda):
     if not compra or not venta:
         enviar_mensaje(chat_id, f"⏳ Obteniendo precio {moneda}...", crear_teclado_opciones(chat_id))
         return
-    mensaje = f"💰 *PRECIO {moneda}*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n🟢 COMPRA: {compra:.2f}\n🔴 VENTA: {venta:.2f}\n📊 Spread: {compra-venta:.2f}\n"
+    mensaje = f"💰 *PRECIO {moneda}*\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    mensaje += f"🟢 COMPRA: {compra:.2f}\n🔴 VENTA: {venta:.2f}\n📊 Spread: {compra-venta:.2f}\n"
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+
+# ==================== FUNCIÓN MODIFICADA: TETHER + BCV ====================
 
 def mostrar_tether_vs_bcv(chat_id):
     compra, venta = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
-    if not compra or not tasas:
-        enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_principal(chat_id))
+
+    if not compra or not venta or not tasas:
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
         return
-    tasa_bcv = tasas['usd']
-    bcv_con_porcentaje = tasa_bcv * 1.005
-    diff_compra = compra - bcv_con_porcentaje
-    pct_compra = (diff_compra / bcv_con_porcentaje) * 100 if bcv_con_porcentaje > 0 else 0
-    mensaje = f"🪙 *TETHER + BCV*\n\n🏦 *BCV Oficial:* {tasa_bcv:.2f} Bs\n📈 *BCV + 0.50%:* {bcv_con_porcentaje:.2f} Bs\n\n🇻🇪 *PRECIO VES EN EL MOMENTO (Binance P2P):*\n  🟢 COMPRA: {compra:.2f} Bs\n  🔴 VENTA: {venta:.2f} Bs\n  📊 Spread: {compra-venta:.2f} Bs\n\n⚖️ *Diferencia vs BCV+0.50%::*\n  Diferencia: {diff_compra:+.2f} Bs\n  Porcentaje: {pct_compra:+.1f}%\n\n💡 _Para montos personalizados, usa la opción *\"¿Cuánto Es?\"* en el menú._"
+
+    tasa_intervencion = tasas['usd']
+    media = (compra + venta) / 2.0
+
+    analisis = obtener_analisis_ves()
+    if analisis:
+        max_24h = analisis['maximo']
+        min_24h = analisis['minimo']
+        var_pct = analisis['cambio_porcentaje']
+        tendencia_str = analisis['tendencia']
+    else:
+        max_24h = compra
+        min_24h = compra
+        var_pct = 0.0
+        tendencia_str = "➡️ Lateral"
+
+    diferencial_bruto = venta - tasa_intervencion
+    margen_bruto_pct = (diferencial_bruto / tasa_intervencion) * 100 if tasa_intervencion > 0 else 0.0
+
+    fecha_hora_str = datetime.now().strftime('%d/%m %H:%M')
+
+    mensaje = f"""📊 *USDT/VES Binance P2P — {fecha_hora_str}*
+
+Precios:
+• Venta: Bs. {venta:,.2f}
+• Compra: Bs. {compra:,.2f}
+• Media: Bs. {media:,.2f}
+
+Tendencia 24h: {tendencia_str}
+• Máx: {max_24h:,.2f} | Mín: {min_24h:,.2f}
+• Variación: {var_pct:+.2f}% en últimas horas
+
+Brecha vs Intervención:
+🏦 Tasa intervención: Bs. {tasa_intervencion:,.2f}
+📐 Diferencial bruto: Bs. {diferencial_bruto:,.2f} (~{margen_bruto_pct:.1f}% sobre intervención)
+
+💡 La brecha sigue amplia. Si vendes USDT a {venta:,.2f} y compras USD vía intervención a {tasa_intervencion:,.2f}, el margen bruto ronda {margen_bruto_pct:.1f}% antes de comisiones bancarias. Revisa comisiones específicas del banco para calcular rentabilidad neta."""
+
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+
+# ==================== RESTO DE CALCULADORAS Y PROCESAMIENTO ====================
 
 def calcular_ganancia_neta(chat_id, monto=100.0):
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
@@ -424,18 +729,48 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
     tasa_bcv = tasas['usd']
     bcv_mas_medio = tasa_bcv * 1.005
     texto_limpio = texto_monto.strip().lower()
+    
     try:
         if 'bs' in texto_limpio:
             monto_bs = float(texto_limpio.replace('bs', '').replace(',', '.').strip())
+            
             usd_oficial = monto_bs / tasa_bcv if tasa_bcv > 0 else 0
             usd_mas_medio = monto_bs / bcv_mas_medio if bcv_mas_medio > 0 else 0
-            mensaje = f"⚖️ *CALCULADORA DE CONVERSIÓN*\n\n📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs\n━━━━━━━━━━━━━━━━━━━━\n✍️ *Operación (Bs ➔ $):* {monto_bs:,.2f} Bs\n🇺🇸 *Total equivalente:* *${usd_oficial:,.2f} USD*\n━━━━━━━━━━━━━━━━━━━━\n\n📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs + 0.50%\n━━━━━━━━━━━━━━━━━━━━\n✍️ *Operación (Bs ➔ $):* {monto_bs:,.2f} Bs\n🇺🇸 *Total equivalente:* *${usd_mas_medio:,.2f} USD*\n━━━━━━━━━━━━━━━━━━━━"
+            
+            mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
+
+📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs
+━━━━━━━━━━━━━━━━━━━━
+✍️ *Operación (Bs ➔ $):* {monto_bs:,.2f} Bs
+🇺🇸 *Total equivalente:* *${usd_oficial:,.2f} USD*
+━━━━━━━━━━━━━━━━━━━━
+
+📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs + 0.50%
+━━━━━━━━━━━━━━━━━━━━
+✍️ *Operación (Bs ➔ $):* {monto_bs:,.2f} Bs
+🇺🇸 *Total equivalente:* *${usd_mas_medio:,.2f} USD*
+━━━━━━━━━━━━━━━━━━━━"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+            
         elif '$' in texto_limpio or 'usd' in texto_limpio:
             monto_usd = float(texto_limpio.replace('$', '').replace('usd', '').replace(',', '.').strip())
+            
             bs_oficial = monto_usd * tasa_bcv
             bs_mas_medio = monto_usd * bcv_mas_medio
-            mensaje = f"⚖️ *CALCULADORA DE CONVERSIÓN*\n\n📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs\n━━━━━━━━━━━━━━━━━━━━\n✍️ *Operación ($ ➔ Bs):* ${monto_usd:,.2f} USD\n🇻🇪 *Total equivalente:* *{bs_oficial:,.2f} Bs*\n━━━━━━━━━━━━━━━━━━━━\n\n📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs + 0.50%\n━━━━━━━━━━━━━━━━━━━━\n✍️ *Operación ($ ➔ Bs):* ${monto_usd:,.2f} USD\n🇻🇪 *Total equivalente:* *{bs_mas_medio:,.2f} Bs*\n━━━━━━━━━━━━━━━━━━━━"
+            
+            mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
+
+📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs
+━━━━━━━━━━━━━━━━━━━━
+✍️ *Operación ($ ➔ Bs):* ${monto_usd:,.2f} USD
+🇻🇪 *Total equivalente:* *{bs_oficial:,.2f} Bs*
+━━━━━━━━━━━━━━━━━━━━
+
+📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs + 0.50%
+━━━━━━━━━━━━━━━━━━━━
+✍️ *Operación ($ ➔ Bs):* ${monto_usd:,.2f} USD
+🇻🇪 *Total equivalente:* *{bs_mas_medio:,.2f} Bs*
+━━━━━━━━━━━━━━━━━━━━"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
     except: pass
 
@@ -476,49 +811,71 @@ def procesar_mensaje(chat_id, texto):
     if texto == '/start':
         usuario_configurando_soles[chat_id] = False
         enviar_mensaje(chat_id, "Bienvenido a Asistente Remesas P2P.", crear_teclado_principal(chat_id))
-    elif texto == 'Tether + BCV': mostrar_tether_vs_bcv(chat_id)
+
+    elif texto == 'Tether + BCV':
+        mostrar_tether_vs_bcv(chat_id)
+
     elif texto == '¿Cuánto Es?':
         usuario_esperando_calculo[chat_id] = True
         usuario_esperando_cruzado[chat_id] = False
         enviar_mensaje(chat_id, "✍️ Escribe la cantidad seguida de *Bs* o *$*.", crear_teclado_principal(chat_id))
+
     elif texto == '¿Cuánto Gané?':
         enviar_mensaje(chat_id, "✍️ Escribe directamente el monto en *USD* que deseas calcular (Ej: `100`).", crear_teclado_principal(chat_id))
-    elif texto == '📈 Historial de brecha VES': mostrar_historial_ves(chat_id)
+
+    elif texto == '📈 Historial de brecha VES':
+        mostrar_historial_ves(chat_id)
+
     elif texto == 'Remesas 💼':
-        if chat_id == ADMIN_ID: enviar_mensaje(chat_id, "💼 *SUBMENÚ REMESAS & TARIFARIOS MANUALEZ*", crear_teclado_remesas(chat_id))
-        else: enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
+        if chat_id == ADMIN_ID:
+            enviar_mensaje(chat_id, "💼 *SUBMENÚ REMESAS & TARIFARIOS MANUALEZ*", crear_teclado_remesas(chat_id))
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
+
     elif texto == '¿Cuánto es Cruzado?':
         if chat_id == ADMIN_ID:
             usuario_esperando_calculo[chat_id] = False
             usuario_esperando_cruzado[chat_id] = True
             enviar_mensaje(chat_id, "✍️ Escribe el monto seguido de *S/* o *Bs*.", crear_teclado_cruzado_rapido(chat_id))
-        else: enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
+
     elif texto == '📋 Tarifario USD':
         if chat_id == ADMIN_ID: mostrar_tarifario_usd(chat_id)
+
     elif texto == '📋 Tarifario Soles':
         if chat_id == ADMIN_ID: mostrar_tarifario_soles(chat_id)
+
     elif texto == '⚙️ Ajustar Tasa':
         if chat_id == ADMIN_ID:
             usuario_configurando_soles[chat_id] = True
             enviar_mensaje(chat_id, f"⚙️ *Tasa Actual:* {TASA_SOLES_TARIFARIO:.2f}\n\n✍️ Envía el nuevo valor (Ej: `3.85`).", crear_teclado_remesas(chat_id))
+
     elif texto == 'Tasas Cruzadas':
-        if chat_id == ADMIN_ID: mostrar_tasas_cambio(chat_id)
-    elif texto == '+ Opciones': enviar_mensaje(chat_id, "📋 *SEGUNDO MENÚ (MERCADO P2P)*", crear_teclado_opciones(chat_id))
+        if chat_id == ADMIN_ID:
+            mostrar_tasas_cambio(chat_id)
+
+    elif texto == '+ Opciones':
+        enviar_mensaje(chat_id, "📋 *SEGUNDO MENÚ (MERCADO P2P)*", crear_teclado_opciones(chat_id))
+
     elif texto == 'Precio USDT': mostrar_precios_usdt(chat_id)
     elif texto == 'Precio VES': mostrar_precio_individual(chat_id, 'VES')
     elif texto == 'Precio COP': mostrar_precio_individual(chat_id, 'COP')
     elif texto == 'Precio PEN': mostrar_precio_individual(chat_id, 'PEN')
+
     elif texto == 'Usuarios Registrados':
         if chat_id == ADMIN_ID:
             usuarios = obtener_usuarios()
             mensaje = f"👥 *Usuarios activos:* {len(usuarios)}"
             for uid in usuarios: mensaje += f"\n• `{uid}`"
             enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
+
     elif texto == 'Volver al menú anterior':
         usuario_configurando_soles[chat_id] = False
         usuario_esperando_calculo[chat_id] = False
         usuario_esperando_cruzado[chat_id] = False
         enviar_mensaje(chat_id, "🏠 *Regresando al menú principal*", crear_teclado_principal(chat_id))
+
     else:
         try:
             monto_usuario = float(texto.replace(',', '.'))
@@ -526,33 +883,36 @@ def procesar_mensaje(chat_id, texto):
         except ValueError:
             enviar_mensaje(chat_id, "Comando no reconocido.", crear_teclado_principal(chat_id))
 
-# ==================== RUTA DE WEBHOOK Y TAREAS SECUNDARIAS ====================
+# ==================== RUTAS FLASK Y WEBHOOK ====================
+
+@app.route('/', methods=['GET'])
+def home():
+    return f"Bot activo 24/7 | Muestras: {len(historial_ves)}", 200
 
 @app.route(f'/{TOKEN}', methods=['POST'])
 def telegram_webhook():
     if request.headers.get('content-type') == 'application/json':
-        try:
-            json_string = request.get_data().decode('utf-8')
-            update = json.loads(json_string)
-            
-            message = update.get('message')
-            if message:
-                chat_id = message.get('chat', {}).get('id')
-                texto = message.get('text', '')
-                if chat_id and texto:
-                    threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
-        except Exception as e:
-            print("Error procesando Webhook:", e)
+        json_string = request.get_data().decode('utf-8')
+        update = json.loads(json_string)
+        
+        message = update.get('message')
+        if message:
+            chat_id = message.get('chat', {}).get('id')
+            texto = message.get('text', '')
+            if chat_id and texto:
+                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
+                
         return 'OK', 200
     return 'Forbidden', 403
 
 def configurar_webhook():
-    url_set = f"{URL_TELEGRAM}setWebhook?url={URL_APP}/{TOKEN}&drop_pending_updates=true"
+    url_app = "https://telegram-usdt-bot-vf5t.onrender.com"
+    url_set = f"{URL_TELEGRAM}setWebhook?url={url_app}/{TOKEN}"
     try:
         r = requests.get(url_set, timeout=10)
-        print("Respuesta Webhook Telegram:", r.json())
+        print("Webhook configurado:", r.json())
     except Exception as e:
-        print("Error registrando Webhook:", e)
+        print("Error configurando Webhook:", e)
 
 def actualizar_precios():
     global cache_precios, cache_tiempo, ultimos_precios
@@ -572,24 +932,11 @@ def actualizar_precios():
             time.sleep(60)
         except: time.sleep(60)
 
-def mantener_activo():
-    while True:
-        try:
-            requests.get(URL_APP, timeout=10)
-        except: pass
-        time.sleep(300)
-
-@app.route('/')
-def home():
-    return f"Bot activo vía Webhook 24/7 | Muestras VES: {len(historial_ves)}"
-
 if __name__ == "__main__":
     cargar_tasas_anteriores()
-    configurar_webhook()  # Registra el Webhook automáticamente al iniciar
+    configurar_webhook()
     
-    # Hilos para alertas P2P y autoconsumo
     threading.Thread(target=actualizar_precios, daemon=True).start()
-    threading.Thread(target=mantener_activo, daemon=True).start()
     
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

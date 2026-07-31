@@ -6,8 +6,6 @@ import json
 from datetime import datetime
 from collections import deque
 from flask import Flask, request
-from PIL import Image, ImageDraw, ImageFont
-import gdown
 
 # ==================== CONFIGURACIÓN ====================
 os.environ['TZ'] = 'America/Caracas'
@@ -27,22 +25,6 @@ ADMIN_ID = int(ADMIN_ID)
 URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 
 app = Flask(__name__)
-
-# ==================== PLANTILLAS GOOGLE DRIVE ====================
-ID_DRIVE_SOLES = "1wt366XOcPAZ_TiQYYgcxvNxtNhvhAxY3"
-ID_DRIVE_USD = "18gq0V7QqO_YFjY6hEdzzwZ2y-OrMpdJe"
-
-def descargar_plantilla_drive(file_id, ruta_local):
-    """Descarga la plantilla directamente desde Google Drive usando gdown."""
-    if not os.path.exists(ruta_local) or os.path.getsize(ruta_local) < 5000:
-        try:
-            url = f"https://drive.google.com/uc?id={file_id}"
-            gdown.download(url, ruta_local, quiet=True)
-            return os.path.exists(ruta_local) and os.path.getsize(ruta_local) > 5000
-        except Exception as e:
-            print(f"Error descargando plantilla desde Drive ({ruta_local}):", e)
-            return False
-    return True
 
 # ==================== TASAS PARA TARIFARIOS Y CONVERSIÓN MANUAL ====================
 TASA_SOLES_TARIFARIO = 3.80
@@ -144,20 +126,6 @@ def enviar_mensaje(chat_id, texto, teclado=None):
     except:
         return False
 
-def enviar_imagen(chat_id, imagen_path, caption="", teclado=None):
-    try:
-        url = URL_TELEGRAM + "sendPhoto"
-        with open(imagen_path, "rb") as img:
-            files = {"photo": img}
-            data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
-            if teclado:
-                data["reply_markup"] = json.dumps(teclado)
-            response = requests.post(url, data=data, files=files, timeout=15)
-            return response.status_code == 200
-    except Exception as e:
-        print("Error enviando imagen:", e)
-        return False
-
 # ==================== OBTENCIÓN P2P Y BCV ====================
 
 def obtener_precios_con_cache(fiat):
@@ -246,81 +214,12 @@ def obtener_tasas_bcv():
         pass
     return None
 
-# ==================== GENERACIÓN DE IMAGEN TARIFARIO ====================
-
-def generar_tarifario(plantilla_path, output_path, tasa_soles, tasa_bcv, col1_valores, col2_valores, col3_valores):
-    """Genera la imagen alineando las 3 columnas y reajustando la cabecera y filas."""
-    img = Image.open(plantilla_path).convert("RGB")
-    draw = ImageDraw.Draw(img)
-
-    try:
-        font_header = ImageFont.truetype("BreeSerif-Regular.ttf", 24)
-        font_cells = ImageFont.truetype("BreeSerif-Regular.ttf", 19)
-    except Exception:
-        try:
-            font_header = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
-            font_cells = ImageFont.truetype("DejaVuSans-Bold.ttf", 19)
-        except Exception:
-            font_header = ImageFont.load_default()
-            font_cells = ImageFont.load_default()
-
-    # 1. Cabeceras Azules (Tasa Soles y Tasa BCV)
-    draw.text((135, 230), str(tasa_soles), fill=(255, 255, 255), font=font_header, anchor="mm")
-    draw.text((385, 230), str(tasa_bcv), fill=(255, 255, 255), font=font_header, anchor="mm")
-
-    # 2. Coordenadas X para las 3 columnas
-    x_col1 = 110  # Columna 1: EQUIVALENTE / BASE ($ / S/)
-    x_col2 = 270  # Columna 2: RECIBES (Bs)
-    x_col3 = 425  # Columna 3: ENVÍAS
-
-    # 3. Posición inicial Y y espacio vertical entre filas
-    y_start = 368
-    y_step = 52
-
-    # 4. Dibujar las 10 filas de la tabla
-    for i in range(min(10, len(col1_valores))):
-        y_pos = y_start + (i * y_step)
-        
-        # Columna 1 ($ / S/)
-        draw.text((x_col1, y_pos), str(col1_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
-        # Columna 2 (RECIBES Bs)
-        draw.text((x_col2, y_pos), str(col2_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
-        # Columna 3 (ENVÍAS / EQUIVALENTE)
-        draw.text((x_col3, y_pos), str(col3_valores[i]), fill=(0, 0, 0), font=font_cells, anchor="mm")
-
-    img.save(output_path, quality=100)
-    return output_path
+# ==================== MOSTRAR TARIFARIOS EN TEXTO ====================
 
 def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     dolares_lista = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
-    
-    col1_usd = [f"{usd}$" for usd in dolares_lista]
-    col2_recibes_bs = [f"{usd * tasa_bcv:,.2f}" for usd in dolares_lista]
-    col3_envias_soles = [f"{(usd * tasa_bcv) / TASA_SOLES_TARIFARIO:,.2f} S/" if TASA_SOLES_TARIFARIO > 0 else "0.00 S/" for usd in dolares_lista]
 
-    plantilla = "plantilla_usd.png"
-    output = f"tarifario_usd_{chat_id}_{int(time.time())}.png"
-
-    if descargar_plantilla_drive(ID_DRIVE_USD, plantilla):
-        try:
-            generar_tarifario(
-                plantilla_path=plantilla,
-                output_path=output,
-                tasa_soles=f"{TASA_SOLES_TARIFARIO:.2f}",
-                tasa_bcv=f"{tasa_bcv:.2f}",
-                col1_valores=col1_usd,
-                col2_valores=col2_recibes_bs,
-                col3_valores=col3_envias_soles
-            )
-            caption = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs"
-            if enviar_imagen(chat_id, output, caption=caption, teclado=crear_teclado_remesas(chat_id)):
-                if os.path.exists(output): os.remove(output)
-                return
-        except Exception as e:
-            print("Error generando gráfico USD:", e)
-
-    # Fallback Texto si falla la descarga o renderizado
     mensaje = f"📋 *TARIFARIO EN USD*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Dólares'.ljust(9)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
     for usd in dolares_lista:
         recibes_val = usd * tasa_bcv
@@ -333,32 +232,6 @@ def mostrar_tarifario_soles(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     soles_lista = [10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
 
-    col1_soles = [f"{soles} S/" for soles in soles_lista]
-    col2_recibes_bs = [f"{soles * TASA_SOLES_TARIFARIO:,.2f}" for soles in soles_lista]
-    col3_dolares_equiv = [f"{(soles * TASA_SOLES_TARIFARIO) / tasa_bcv:,.2f}$" if tasa_bcv > 0 else "0.00$" for soles in soles_lista]
-
-    plantilla = "plantilla_soles.png"
-    output = f"tarifario_soles_{chat_id}_{int(time.time())}.png"
-
-    if descargar_plantilla_drive(ID_DRIVE_SOLES, plantilla):
-        try:
-            generar_tarifario(
-                plantilla_path=plantilla,
-                output_path=output,
-                tasa_soles=f"{TASA_SOLES_TARIFARIO:.2f}",
-                tasa_bcv=f"{tasa_bcv:.2f}",
-                col1_valores=col1_soles,
-                col2_valores=col2_recibes_bs,
-                col3_valores=col3_dolares_equiv
-            )
-            caption = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}"
-            if enviar_imagen(chat_id, output, caption=caption, teclado=crear_teclado_remesas(chat_id)):
-                if os.path.exists(output): os.remove(output)
-                return
-        except Exception as e:
-            print("Error generando gráfico Soles:", e)
-
-    # Fallback Texto si falla
     mensaje = f"📋 *TARIFARIO EN SOLES A BOLÍVARES*\n🕐 Tasa BCV: {tasa_bcv:.2f} Bs | Perú - Ven Configurada: {TASA_SOLES_TARIFARIO:.2f}\n\n```\n{'Enviado'.ljust(10)}|{'Recibes (Bs)'.ljust(14)}|{'Equivalente'.ljust(12)}\n---------------------------------\n"
     for soles in soles_lista:
         recibes_val = soles * TASA_SOLES_TARIFARIO
@@ -591,7 +464,7 @@ def verificar_alertas(precios):
     global ultimos_precios
     if not precios: 
         return
-        
+
     usuarios = obtener_usuarios()
     if not usuarios: 
         return
@@ -599,9 +472,9 @@ def verificar_alertas(precios):
     for moneda in ['VES', 'COP', 'PEN']:
         if moneda not in precios or not precios[moneda]: 
             continue
-            
+
         precio_actual = precios[moneda]['compra']
-        
+
         if ultimos_precios[moneda] is None:
             ultimos_precios[moneda] = precio_actual
             continue
@@ -613,9 +486,9 @@ def verificar_alertas(precios):
             direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
             emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
             signo = "+" if precio_actual > ultimos_precios[moneda] else ""
-            
+
             cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
-            
+
             mensaje = (
                 f"\n{emoji} *🔔 ALERTA {moneda}* {emoji}\n\n"
                 f"{direccion} en {signo}{cambio:.2f}\n\n"
@@ -667,8 +540,9 @@ def mostrar_tether_vs_bcv(chat_id):
         enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
         return
 
-    # Tasa de intervención incluyendo el +0.50% de comisión
-    tasa_intervencion = tasas['usd'] * 1.005
+    # Tasa BCV Oficial e Intervención (+0.50% de comisión)
+    tasa_bcv_oficial = tasas['usd']
+    tasa_intervencion = tasa_bcv_oficial * 1.005
     media = (compra + venta) / 2.0
 
     analisis = obtener_analisis_ves()
@@ -683,27 +557,36 @@ def mostrar_tether_vs_bcv(chat_id):
         var_pct = 0.0
         tendencia_str = "➡️ Lateral"
 
+    # Cálculos de brechas
+    brecha_compra_bcv = compra - tasa_bcv_oficial
+    pct_compra_bcv = (brecha_compra_bcv / tasa_bcv_oficial) * 100 if tasa_bcv_oficial > 0 else 0.0
+
+    brecha_venta_bcv = venta - tasa_bcv_oficial
+    pct_venta_bcv = (brecha_venta_bcv / tasa_bcv_oficial) * 100 if tasa_bcv_oficial > 0 else 0.0
+
     diferencial_bruto = venta - tasa_intervencion
     margen_bruto_pct = (diferencial_bruto / tasa_intervencion) * 100 if tasa_intervencion > 0 else 0.0
 
     fecha_hora_str = datetime.now().strftime('%d/%m %H:%M')
 
-    mensaje = f"""📊 *USDT/VES Binance P2P — {fecha_hora_str}*
+    mensaje = f"""📊 *MERCADO USDT / BCV — {fecha_hora_str}*
 
-Precios:
-• Venta: Bs. {venta:.2f}
-• Compra: Bs. {compra:.2f}
-• Media: Bs. {media:.2f}
+🟢 *Binance P2P (USDT)*
+• Venta: *{venta:.2f} Bs*
+• Compra: *{compra:.2f} Bs*
+• Media: *{media:.2f} Bs*
+• Tendencia (24h): {tendencia_str} (Máx {max_24h:.2f} | Mín {min_24h:.2f} | {var_pct:+.2f}%)
 
-Tendencia 24h: {tendencia_str}
-• Máx: {max_24h:.2f} | Mín: {min_24h:.2f}
-• Variación: {var_pct:+.2f}% en últimas horas
+🏦 *Tasa Oficial (BCV)*
+• BCV Oficial: *{tasa_bcv_oficial:.2f} Bs*
+• BCV + 0.50%: *{tasa_intervencion:.2f} Bs*
 
-Brecha vs Intervención:
-🏦 Tasa intervención: Bs. {tasa_intervencion:.2f} +0.50%
-📐 Diferencial bruto: Bs. {diferencial_bruto:.2f} (~{margen_bruto_pct:.1f}% sobre intervención)
+📐 *Análisis de Brecha*
+• P2P Compra vs BCV: *+{brecha_compra_bcv:.2f} Bs* ({pct_compra_bcv:+.2f}%)
+• P2P Venta vs BCV: *+{brecha_venta_bcv:.2f} Bs* ({pct_venta_bcv:+.2f}%)
+• Margen Operación Intervención: *~{margen_bruto_pct:.2f}%* ({diferencial_bruto:.2f} Bs)
 
-💡 La brecha sigue amplia. Si vendes USDT a {venta:.2f} y compras USD vía intervención a {tasa_intervencion:.2f}, el margen bruto ronda {margen_bruto_pct:.1f}% antes de comisiones bancarias. Revisa comisiones específicas del banco para calcular rentabilidad neta."""
+💡 *Nota:* Si ejecutas la venta de USDT a {venta:.2f} Bs y recompras USD por intervención bancaria a {tasa_intervencion:.2f} Bs, el retorno bruto estimado ronda el {margen_bruto_pct:.1f}% antes de comisiones bancarias locales."""
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
@@ -730,14 +613,14 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
     tasa_bcv = tasas['usd']
     bcv_mas_medio = tasa_bcv * 1.005
     texto_limpio = texto_monto.strip().lower()
-    
+
     try:
         if 'bs' in texto_limpio:
             monto_bs = float(texto_limpio.replace('bs', '').replace(',', '.').strip())
-            
+
             usd_oficial = monto_bs / tasa_bcv if tasa_bcv > 0 else 0
             usd_mas_medio = monto_bs / bcv_mas_medio if bcv_mas_medio > 0 else 0
-            
+
             mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
 
 📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs
@@ -752,13 +635,13 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
 🇺🇸 *Total equivalente:* *${usd_mas_medio:,.2f} USD*
 ━━━━━━━━━━━━━━━━━━━━"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-            
+
         elif '$' in texto_limpio or 'usd' in texto_limpio:
             monto_usd = float(texto_limpio.replace('$', '').replace('usd', '').replace(',', '.').strip())
-            
+
             bs_oficial = monto_usd * tasa_bcv
             bs_mas_medio = monto_usd * bcv_mas_medio
-            
+
             mensaje = f"""⚖️ *CALCULADORA DE CONVERSIÓN*
 
 📊 *Tasa BCV Oficial:* {tasa_bcv:.2f} Bs
@@ -895,14 +778,14 @@ def telegram_webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = json.loads(json_string)
-        
+
         message = update.get('message')
         if message:
             chat_id = message.get('chat', {}).get('id')
             texto = message.get('text', '')
             if chat_id and texto:
                 threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
-                
+
         return 'OK', 200
     return 'Forbidden', 403
 
@@ -936,8 +819,8 @@ def actualizar_precios():
 if __name__ == "__main__":
     cargar_tasas_anteriores()
     configurar_webhook()
-    
+
     threading.Thread(target=actualizar_precios, daemon=True).start()
-    
+
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

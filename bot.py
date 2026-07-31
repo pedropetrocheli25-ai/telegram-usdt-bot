@@ -667,7 +667,8 @@ def mostrar_tether_vs_bcv(chat_id):
         enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
         return
 
-    tasa_intervencion = tasas['usd']
+    # Tasa de intervención incluyendo el +0.50% de comisión
+    tasa_intervencion = tasas['usd'] * 1.005
     media = (compra + venta) / 2.0
 
     analisis = obtener_analisis_ves()
@@ -690,19 +691,19 @@ def mostrar_tether_vs_bcv(chat_id):
     mensaje = f"""📊 *USDT/VES Binance P2P — {fecha_hora_str}*
 
 Precios:
-• Venta: Bs. {venta:,.2f}
-• Compra: Bs. {compra:,.2f}
-• Media: Bs. {media:,.2f}
+• Venta: Bs. {venta:.2f}
+• Compra: Bs. {compra:.2f}
+• Media: Bs. {media:.2f}
 
 Tendencia 24h: {tendencia_str}
-• Máx: {max_24h:,.2f} | Mín: {min_24h:,.2f}
+• Máx: {max_24h:.2f} | Mín: {min_24h:.2f}
 • Variación: {var_pct:+.2f}% en últimas horas
 
 Brecha vs Intervención:
-🏦 Tasa intervención: Bs. {tasa_intervencion:,.2f}
-📐 Diferencial bruto: Bs. {diferencial_bruto:,.2f} (~{margen_bruto_pct:.1f}% sobre intervención)
+🏦 Tasa intervención: Bs. {tasa_intervencion:.2f} +0.50%
+📐 Diferencial bruto: Bs. {diferencial_bruto:.2f} (~{margen_bruto_pct:.1f}% sobre intervención)
 
-💡 La brecha sigue amplia. Si vendes USDT a {venta:,.2f} y compras USD vía intervención a {tasa_intervencion:,.2f}, el margen bruto ronda {margen_bruto_pct:.1f}% antes de comisiones bancarias. Revisa comisiones específicas del banco para calcular rentabilidad neta."""
+💡 La brecha sigue amplia. Si vendes USDT a {venta:.2f} y compras USD vía intervención a {tasa_intervencion:.2f}, el margen bruto ronda {margen_bruto_pct:.1f}% antes de comisiones bancarias. Revisa comisiones específicas del banco para calcular rentabilidad neta."""
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 

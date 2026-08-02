@@ -530,7 +530,7 @@ def mostrar_precio_individual(chat_id, moneda):
     mensaje += f"🟢 COMPRA: {compra:.2f}\n🔴 VENTA: {venta:.2f}\n📊 Spread: {compra-venta:.2f}\n"
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
-# ==================== FUNCIÓN MODIFICADA: TETHER + BCV ====================
+# ==================== TETHER + BCV ====================
 
 def mostrar_tether_vs_bcv(chat_id):
     compra, venta = obtener_precios_con_cache('VES')
@@ -590,21 +590,75 @@ def mostrar_tether_vs_bcv(chat_id):
 
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
-# ==================== RESTO DE CALCULADORAS Y PROCESAMIENTO ====================
+# ==================== FUNCIÓN MODIFICADA: CUÁNTO GANÉ ====================
 
 def calcular_ganancia_neta(chat_id, monto=100.0):
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
-    if not compra_ves or not tasas: return
+    
+    if not venta_ves or not tasas:
+        enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
+        return
+
+    # 1. Tasa BCV Oficial y Costo de Intervención
     tasa_bcv = tasas['usd']
     bcv_mas_medio = tasa_bcv * 1.005
-    costo_bcv_monto = bcv_mas_medio * monto
-    usdt_neto_tarjeta = monto * (1 - 0.015)  
-    usdt_final = usdt_neto_tarjeta * (1 - 0.041)  
-    retorno_ves = usdt_final * venta_ves
-    ganancia_neta_ves = retorno_ves - costo_bcv_monto
-    ganancia_porcentaje = (ganancia_neta_ves / costo_bcv_monto) * 100 if costo_bcv_monto > 0 else 0
-    mensaje = f"💵 *CALCULADORA DE RETORNO NETO*\n\nAnálisis financiero detallado basado en un capital de *${monto:,.2f} USD*:\n\n*1. Costo de Intervención (Egreso):*\n• BCV Oficial: {tasa_bcv:.2f} Bs\n• BCV + 0.50%: {bcv_mas_medio:.2f} Bs\n• Total Invertido ({monto:.2f}$): *{costo_bcv_monto:,.2f} Bs*\n\n*2. Liquidación y Comisiones:*\n• Capital base: {monto:.2f} USDT\n• Tarjeta (-1.5%): {usdt_neto_tarjeta:,.2f} USDT\n• Bpay (-4.1%): {usdt_final:,.4f} USDT\n\n*3. Retorno en P2P (Venta VES):*\n• Tasa de Venta: {venta_ves:.2f} Bs\n• Total Retornado: *{retorno_ves:,.2f} Bs*\n\n━━━━━━━━━━━━━━━━━━━━\n📊 *GANANCIA NETA TOTAL:*\n• Retorno Neto: *{ganancia_neta_ves:+,.2f} Bs* ({ganancia_porcentaje:+.2f}%)\n━━━━━━━━━━━━━━━━━━━━"
+    costo_bcv_monto = monto * bcv_mas_medio
+
+    # 2. Comisiones Banesco (1.5% Tarjeta + 4.1% Bpay)
+    comision_tarjeta = monto * 0.015
+    comision_bpay = monto * 0.041
+    total_comisiones = comision_tarjeta + comision_bpay
+
+    # 3. Liquidación Final
+    usdt_neto = monto - total_comisiones
+
+    # 4. Retorno en P2P
+    total_retornado_bs = usdt_neto * venta_ves
+    equivalente_usd_bcv = total_retornado_bs / tasa_bcv if tasa_bcv > 0 else 0.0
+
+    # 5. Resultados de Ganancia
+    ganancia_bs = total_retornado_bs - costo_bcv_monto
+    ganancia_usd = equivalente_usd_bcv - monto
+    rendimiento_pct = (ganancia_usd / monto) * 100 if monto > 0 else 0.0
+    ganancia_por_dolar = ganancia_usd / monto if monto > 0 else 0.0
+
+    mensaje = f"""🏦 *ANÁLISIS COMPLETO CUÁNTO GANÉ*
+💰 Capital: *${monto:,.2f} USD*
+📊 Tasa BCV: *{tasa_bcv:.2f} Bs*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+1️⃣ *COSTO DE INTERVENCIÓN (Egreso)*
+• BCV Oficial: *{tasa_bcv:.2f} Bs*
+• BCV + 0.50%: *{bcv_mas_medio:.2f} Bs*
+• Total Invertido: *${monto:,.2f} USD* → *{costo_bcv_monto:,.2f} Bs*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+2️⃣ *COMISIONES DE BANESCO*
+• Tarjeta (1.5%): *${comision_tarjeta:,.2f} USD*
+• Bpay (4.1%): *${comision_bpay:,.2f} USD*
+• TOTAL COMISIONES: *${total_comisiones:,.2f} USD*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+3️⃣ *LIQUIDACIÓN FINAL (USDT)*
+• Capital bruto: *{monto:,.2f} USDT*
+• Comisiones: *-{total_comisiones:,.2f} USDT*
+• USDT neto: *{usdt_neto:,.2f} USDT*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+4️⃣ *RETORNO EN P2P*
+• Tasa de Venta USDT: *{venta_ves:.2f} Bs*
+• Total Retornado: *{total_retornado_bs:,.2f} Bs*
+• Equivalente USD (BCV): *${equivalente_usd_bcv:,.2f}*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *GANANCIA NETA TOTAL*
+• En Bs: *{ganancia_bs:+,.2f} Bs*
+• En USD: *${ganancia_usd:+,.2f}*
+• Rendimiento: *{rendimiento_pct:+.2f}%*
+
+• 💵 Ganancia por dólar: *${ganancia_por_dolar:+.3f}* por cada $1"""
+
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 def calcular_conversion_bcv_medio(chat_id, texto_monto):

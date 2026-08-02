@@ -3,9 +3,23 @@ import time
 import os
 import threading
 import json
+import logging
+import traceback
 from datetime import datetime
-from collections import deque
-from flask import Flask, request
+from collections import deque, OrderedDict
+from flask import Flask, request, jsonify
+from functools import wraps
+
+# ==================== CONFIGURACIÓN DE LOGGING ====================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot_errors.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # ==================== CONFIGURACIÓN ====================
 os.environ['TZ'] = 'America/Caracas'
@@ -37,7 +51,6 @@ UMBRALES = {
 }
 
 FLUCTUACION_UMBRAL = 0.8
-ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 
 # ==================== CONTROL DE ACCESO ====================
 GRUPO_AUTORIZADO_ID = -5370892602  
@@ -52,14 +65,247 @@ def guardar_usuario(chat_id):
     if chat_id not in usuarios_activos:
         usuarios_activos.add(chat_id)
 
-# ==================== CACHÉ DE PRECIOS ====================
-cache_precios = {}
-cache_tiempo = {}
-CACHE_DURACION = 30
+# ==================== CACHÉ ROBUSTO (PROBLEMA 5) ====================
+class CacheRobusto:
+    def __init__(self, ttl=30, max_size=10):
+        self.cache = OrderedDict()
+        self.ttl = ttl
+        self.max_size = max_size
+        self.lock = threading.Lock()
+    
+    def get(self, key):
+        with self.lock:
+            if key in self.cache:
+                value, timestamp = self.cache[key]
+                if time.time() - timestamp < self.ttl:
+                    # Mover al final (LRU)
+                    self.cache.move_to_end(key)
+                    return value
+                else:
+                    # Expiró
+                    del self.cache[key]
+                    return None
+            return None
+    
+    def set(self, key, value):
+        with self.lock:
+            # Si el caché está lleno, eliminar el más antiguo
+            if len(self.cache) >= self.max_size:
+                self.cache.popitem(last=False)
+            
+            self.cache[key] = (value, time.time())
+            self.cache.move_to_end(key)
+    
+    def invalidate(self, key=None):
+        with self.lock:
+            if key:
+                if key in self.cache:
+                    del self.cache[key]
+            else:
+                self.cache.clear()
+    
+    def get_stats(self):
+        with self.lock:
+            return {
+                'size': len(self.cache),
+                'max_size': self.max_size,
+                'keys': list(self.cache.keys())
+            }
+
+cache_precios = CacheRobusto(ttl=30, max_size=10)
+cache_tiempo = {}  # Mantener por compatibilidad
+
+# ==================== ESTADO COMPARTIDO CON LOCK (PROBLEMA 9 - Parcial) ====================
+class EstadoCompartido:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
+        self.ultimas_tasas_cruzadas = {}
+        self.historial_ves = deque(maxlen=1440)
+        self.precio_apertura_ves = None
+    
+    def actualizar_precio(self, moneda, precio):
+        with self.lock:
+            self.ultimos_precios[moneda] = precio
+    
+    def obtener_precio(self, moneda):
+        with self.lock:
+            return self.ultimos_precios.get(moneda)
+    
+    def actualizar_tasas(self, tasas):
+        with self.lock:
+            self.ultimas_tasas_cruzadas = tasas.copy()
+    
+    def obtener_tasas(self):
+        with self.lock:
+            return self.ultimas_tasas_cruzadas.copy()
+    
+    def agregar_historial_ves(self, precio):
+        with self.lock:
+            self.historial_ves.append(precio)
+            if self.precio_apertura_ves is None:
+                self.precio_apertura_ves = precio
+    
+    def obtener_historial_ves(self):
+        with self.lock:
+            return list(self.historial_ves)
+
+estado = EstadoCompartido()
+
+# Mantener variables globales para compatibilidad
+ultimos_precios = estado.ultimos_precios
+historial_ves = estado.historial_ves
+precio_apertura_ves = None
 
 # ==================== HISTORIAL ====================
-historial_ves = deque(maxlen=1440)
-precio_apertura_ves = None
+def guardar_historial_ves(precio):
+    estado.agregar_historial_ves(precio)
+
+def obtener_analisis_ves():
+    precios = estado.obtener_historial_ves()
+    if not precios: 
+        return None
+    if len(precios) < 2: 
+        return None
+    precio_actual = precios[-1]
+    precio_inicio = precios[0]
+    cambio = precio_actual - precio_inicio
+    cambio_porcentaje = (cambio / precio_inicio) * 100 if precio_inicio != 0 else 0
+    precio_max = max(precios)
+    precio_min = min(precios)
+    tendencia = "↗️ Alcista" if len(precios) > 10 and precios[-1] > precios[-10] else "↘️ Bajista"
+    if len(precios) > 10 and abs(precios[-1] - precios[-10]) < 0.01: 
+        tendencia = "➡️ Lateral"
+    return {
+        'actual': precio_actual, 'apertura': precio_inicio, 'cambio': cambio,
+        'cambio_porcentaje': cambio_porcentaje, 'maximo': precio_max, 'minimo': precio_min,
+        'tendencia': tendencia, 'muestras': len(precios)
+    }
+
+# ==================== RATE LIMITING (PROBLEMA 2) ====================
+class RateLimiterAvanzado:
+    def __init__(self):
+        self.usuarios = {}
+        self.ip_limiter = {}
+        self.global_counter = 0
+        self.last_reset = time.time()
+        self.GLOBAL_LIMIT = 100
+        self.USER_LIMIT = 30
+        self.IP_LIMIT = 50
+        self.WINDOW = 60
+        self.lock = threading.Lock()
+    
+    def _clean_old_records(self, now):
+        cutoff = now - self.WINDOW
+        with self.lock:
+            self.usuarios = {k: [t for t in v if t > cutoff] for k, v in self.usuarios.items()}
+            self.ip_limiter = {k: [t for t in v if t > cutoff] for k, v in self.ip_limiter.items()}
+            
+            # Reset global counter cada minuto
+            if now - self.last_reset >= self.WINDOW:
+                self.global_counter = 0
+                self.last_reset = now
+    
+    def check_limit(self, user_id, ip=None):
+        now = time.time()
+        self._clean_old_records(now)
+        
+        with self.lock:
+            # Verificar límite global
+            self.global_counter += 1
+            if self.global_counter > self.GLOBAL_LIMIT:
+                logger.warning(f"Límite global excedido: {self.global_counter}")
+                return False
+            
+            # Verificar límite por usuario
+            if user_id not in self.usuarios:
+                self.usuarios[user_id] = []
+            if len(self.usuarios[user_id]) >= self.USER_LIMIT:
+                logger.warning(f"Límite de usuario {user_id} excedido")
+                return False
+            
+            # Verificar límite por IP (si está disponible)
+            if ip:
+                import hashlib
+                ip_hash = hashlib.md5(ip.encode()).hexdigest()
+                if ip_hash not in self.ip_limiter:
+                    self.ip_limiter[ip_hash] = []
+                if len(self.ip_limiter[ip_hash]) >= self.IP_LIMIT:
+                    logger.warning(f"Límite de IP {ip_hash} excedido")
+                    return False
+                self.ip_limiter[ip_hash].append(now)
+            
+            self.usuarios[user_id].append(now)
+            return True
+    
+    def get_stats(self):
+        with self.lock:
+            return {
+                'usuarios_activos': len(self.usuarios),
+                'ips_activas': len(self.ip_limiter),
+                'peticiones_globales': self.global_counter,
+                'limite_usuario': self.USER_LIMIT,
+                'limite_ip': self.IP_LIMIT
+            }
+
+rate_limiter = RateLimiterAvanzado()
+
+# ==================== DECORADOR DE MÉTRICAS (PROBLEMA 9) ====================
+class Metricas:
+    def __init__(self):
+        self.tiempos = {}
+        self.contadores = {}
+        self.lock = threading.Lock()
+    
+    def medir_tiempo(self, nombre):
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                inicio = time.time()
+                try:
+                    resultado = func(*args, **kwargs)
+                    duracion = (time.time() - inicio) * 1000  # en ms
+                    with self.lock:
+                        if nombre not in self.tiempos:
+                            self.tiempos[nombre] = {'sum': 0, 'count': 0, 'max': 0, 'min': float('inf')}
+                        self.tiempos[nombre]['sum'] += duracion
+                        self.tiempos[nombre]['count'] += 1
+                        self.tiempos[nombre]['max'] = max(self.tiempos[nombre]['max'], duracion)
+                        self.tiempos[nombre]['min'] = min(self.tiempos[nombre]['min'], duracion)
+                        if nombre not in self.contadores:
+                            self.contadores[nombre] = 0
+                        self.contadores[nombre] += 1
+                    return resultado
+                except Exception as e:
+                    with self.lock:
+                        if nombre not in self.contadores:
+                            self.contadores[nombre] = 0
+                        # Usar clave especial para errores
+                        error_key = f"{nombre}_errores"
+                        if error_key not in self.contadores:
+                            self.contadores[error_key] = 0
+                        self.contadores[error_key] += 1
+                    raise
+            return wrapper
+        return decorator
+    
+    def obtener_metricas(self):
+        with self.lock:
+            metricas = {
+                'tiempos': {},
+                'contadores': self.contadores.copy()
+            }
+            for nombre, data in self.tiempos.items():
+                if data['count'] > 0:
+                    metricas['tiempos'][nombre] = {
+                        'promedio_ms': data['sum'] / data['count'],
+                        'max_ms': data['max'],
+                        'min_ms': data['min'],
+                        'count': data['count']
+                    }
+            return metricas
+
+metricas = Metricas()
 
 # ==================== ESTADOS DE ENTRADA ====================
 usuario_esperando_calculo = {} 
@@ -67,7 +313,6 @@ usuario_esperando_cruzado = {}
 usuario_configurando_soles = {}  
 
 # ==================== INTERFACES DE TECLADOS ====================
-
 def crear_teclado_principal(chat_id):
     teclado = [
         ["Tether + BCV"],
@@ -123,26 +368,73 @@ def enviar_mensaje(chat_id, texto, teclado=None):
             data["reply_markup"] = teclado
         response = requests.post(url, json=data, timeout=10)
         return response.status_code == 200
-    except:
+    except Exception as e:
+        logger.error(f"Error enviando mensaje a {chat_id}: {e}")
         return False
+
+# ==================== API FALLBACKS (PROBLEMA 10) ====================
+API_FALLBACKS = [
+    "https://api.exchangerate-api.com/v4/latest/USD",
+    "https://api.exchangeratesapi.io/latest?base=USD",
+]
+
+def obtener_tasas_bcv_con_fallback():
+    """Intenta obtener tasas de múltiples fuentes"""
+    for i, api_url in enumerate(API_FALLBACKS):
+        try:
+            logger.info(f"Intentando API {i+1}: {api_url}")
+            response = requests.get(api_url, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                tasa = None
+                
+                if 'exchangerate-api' in api_url:
+                    tasa = data.get('rates', {}).get('VES', 0)
+                elif 'exchangeratesapi' in api_url:
+                    tasa = data.get('rates', {}).get('VES', 0)
+                
+                if tasa and tasa > 0:
+                    logger.info(f"Tasa obtenida de API {i+1}: {tasa}")
+                    eur = data.get('rates', {}).get('EUR', 0)
+                    return {
+                        'usd': tasa,
+                        'eur': tasa * eur if eur > 0 else tasa * 0.92,
+                        'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'fuente': f"API {i+1}"
+                    }
+            else:
+                logger.warning(f"API {i+1} respondió con código {response.status_code}")
+        except Exception as e:
+            logger.warning(f"API {i+1} falló: {e}")
+            continue
+    
+    logger.error("Todas las APIs fallaron, usando tasa por defecto")
+    return {
+        'usd': 45.00,
+        'eur': 41.40,
+        'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'fuente': 'Tasa por defecto'
+    }
 
 # ==================== OBTENCIÓN P2P Y BCV ====================
 
+@metricas.medir_tiempo('obtener_precios_cache')
 def obtener_precios_con_cache(fiat):
-    global cache_precios, cache_tiempo
-    ahora = time.time()
-
-    if fiat in cache_precios and fiat in cache_tiempo:
-        if ahora - cache_tiempo[fiat] < CACHE_DURACION:
-            return cache_precios[fiat]['compra'], cache_precios[fiat]['venta']
-
+    # Intentar obtener del caché robusto
+    cached = cache_precios.get(fiat)
+    if cached:
+        return cached['compra'], cached['venta']
+    
     compra, venta = obtener_precios_p2p_reales(fiat)
     if compra and venta:
-        cache_precios[fiat] = {'compra': compra, 'venta': venta}
-        cache_tiempo[fiat] = ahora
-
+        cache_precios.set(fiat, {'compra': compra, 'venta': venta})
+        # Mantener cache_tiempo para compatibilidad
+        cache_tiempo[fiat] = time.time()
+    
     return compra, venta
 
+@metricas.medir_tiempo('obtener_precios_p2p')
 def obtener_precios_p2p_reales(fiat):
     try:
         url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
@@ -162,8 +454,10 @@ def obtener_precios_p2p_reales(fiat):
                             precios.append(p)
                     if precios:
                         compra = min(precios)
-        except:
-            pass
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout obteniendo precios SELL para {fiat}")
+        except Exception as e:
+            logger.error(f"Error en SELL para {fiat}: {e}")
 
         data = {"asset": "USDT", "fiat": fiat, "tradeType": "BUY", "page": 1, "rows": 10, "payTypes": []}
         venta = None
@@ -179,15 +473,18 @@ def obtener_precios_p2p_reales(fiat):
                             precios.append(p)
                     if precios:
                         venta = max(precios)
-        except:
-            pass
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout obteniendo precios BUY para {fiat}")
+        except Exception as e:
+            logger.error(f"Error en BUY para {fiat}: {e}")
 
         if compra is None or venta is None:
             return None, None
         if compra < venta:
             compra, venta = venta, compra
         return compra, venta
-    except:
+    except Exception as e:
+        logger.error(f"Error inesperado obteniendo precios para {fiat}: {e}\n{traceback.format_exc()}")
         return None, None
 
 def obtener_tasa_bcv_actual():
@@ -197,25 +494,9 @@ def obtener_tasa_bcv_actual():
     return 45.00 
 
 def obtener_tasas_bcv():
-    try:
-        url = "https://api.exchangerate-api.com/v4/latest/USD"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            usd = data.get('rates', {}).get('VES', 0)
-            eur = data.get('rates', {}).get('EUR', 0)
-            if usd > 0:
-                return {
-                    'usd': usd,
-                    'eur': usd * eur if eur > 0 else usd * 0.92,
-                    'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-    except:
-        pass
-    return None
+    return obtener_tasas_bcv_con_fallback()
 
 # ==================== MOSTRAR TARIFARIOS EN TEXTO ====================
-
 def mostrar_tarifario_usd(chat_id):
     tasa_bcv = obtener_tasa_bcv_actual()
     dolares_lista = [10, 20, 30, 50, 100, 150, 200, 250, 300, 500]
@@ -241,7 +522,6 @@ def mostrar_tarifario_soles(chat_id):
     enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
 
 # ==================== TASAS CRUZADAS ====================
-
 def calcular_tasas_cruzadas():
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     compra_cop, venta_cop = obtener_precios_con_cache('COP')
@@ -317,7 +597,6 @@ def mostrar_tasas_cambio(chat_id):
     enviar_mensaje(chat_id, mensaje, crear_teclado_remesas(chat_id))
 
 # ==================== ¿CUÁNTO ES CRUZADO? ====================
-
 def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
     tasas = obtener_tasas_bcv()
     if not tasas:
@@ -384,29 +663,33 @@ def calcular_conversion_tasas_cruzadas(chat_id, texto_monto):
         enviar_mensaje(chat_id, "❌ Error al realizar la conversión cruzada. Verifica la cantidad escrita.", crear_teclado_cruzado_rapido(chat_id))
 
 # ==================== FLUCTUACIÓN E HISTORIAL ====================
-
 with open("tasas_anteriores.json", "w") as f: pass
-ultimas_tasas_cruzadas = {}
 
 def guardar_tasas_anteriores():
     try:
-        with open("tasas_anteriores.json", 'w') as f: json.dump(ultimas_tasas_cruzadas, f)
-    except: pass
+        tasas = estado.obtener_tasas()
+        with open("tasas_anteriores.json", 'w') as f: 
+            json.dump(tasas, f)
+    except Exception as e:
+        logger.error(f"Error guardando tasas anteriores: {e}")
 
 def cargar_tasas_anteriores():
-    global ultimas_tasas_cruzadas
     try:
         if os.path.exists("tasas_anteriores.json"):
-            with open("tasas_anteriores.json", 'r') as f: ultimas_tasas_cruzadas = json.load(f)
-    except: pass
+            with open("tasas_anteriores.json", 'r') as f: 
+                tasas = json.load(f)
+                estado.actualizar_tasas(tasas)
+    except Exception as e:
+        logger.error(f"Error cargando tasas anteriores: {e}")
 
 def verificar_fluctuacion_tasas():
-    global ultimas_tasas_cruzadas
     tasas_actuales = calcular_tasas_cruzadas()
     if not tasas_actuales:
         return
-    if not ultimas_tasas_cruzadas:
-        ultimas_tasas_cruzadas = tasas_actuales.copy()
+    
+    tasas_anteriores = estado.obtener_tasas()
+    if not tasas_anteriores:
+        estado.actualizar_tasas(tasas_actuales.copy())
         guardar_tasas_anteriores()
         return
 
@@ -415,8 +698,8 @@ def verificar_fluctuacion_tasas():
     hubo_fluctuacion = False
 
     for clave, valor_actual in tasas_actuales.items():
-        if clave in ultimas_tasas_cruzadas:
-            valor_anterior = ultimas_tasas_cruzadas[clave]
+        if clave in tasas_anteriores:
+            valor_anterior = tasas_anteriores[clave]
             if valor_anterior > 0:
                 fluctuacion = abs((valor_actual - valor_anterior) / valor_anterior) * 100
                 if fluctuacion >= FLUCTUACION_UMBRAL:
@@ -430,38 +713,14 @@ def verificar_fluctuacion_tasas():
             try:
                 enviar_mensaje(usuario, mensaje)
                 time.sleep(0.05)
-            except:
-                pass
-    ultimas_tasas_cruzadas = tasas_actuales.copy()
+            except Exception as e:
+                logger.error(f"Error enviando alerta a {usuario}: {e}")
+    
+    estado.actualizar_tasas(tasas_actuales.copy())
     guardar_tasas_anteriores()
-
-def guardar_historial_ves(precio):
-    global precio_apertura_ves
-    historial_ves.append(precio)
-    if precio_apertura_ves is None:
-        precio_apertura_ves = precio
-
-def obtener_analisis_ves():
-    if not historial_ves: return None
-    precios = list(historial_ves)
-    if len(precios) < 2: return None
-    precio_actual = precios[-1]
-    precio_inicio = precios[0]
-    cambio = precio_actual - precio_inicio
-    cambio_porcentaje = (cambio / precio_inicio) * 100 if precio_inicio != 0 else 0
-    precio_max = max(precios)
-    precio_min = min(precios)
-    tendencia = "↗️ Alcista" if len(precios) > 10 and precios[-1] > precios[-10] else "↘️ Bajista"
-    if len(precios) > 10 and abs(precios[-1] - precios[-10]) < 0.01: tendencia = "➡️ Lateral"
-    return {
-        'actual': precio_actual, 'apertura': precio_inicio, 'cambio': cambio,
-        'cambio_porcentaje': cambio_porcentaje, 'maximo': precio_max, 'minimo': precio_min,
-        'tendencia': tendencia, 'muestras': len(precios)
-    }
 
 # ==================== VERIFICAR ALERTAS ACUMULATIVAS ====================
 def verificar_alertas(precios):
-    global ultimos_precios
     if not precios: 
         return
 
@@ -474,26 +733,27 @@ def verificar_alertas(precios):
             continue
 
         precio_actual = precios[moneda]['compra']
+        precio_anterior = estado.obtener_precio(moneda)
 
-        if ultimos_precios[moneda] is None:
-            ultimos_precios[moneda] = precio_actual
+        if precio_anterior is None:
+            estado.actualizar_precio(moneda, precio_actual)
             continue
 
-        cambio = abs(precio_actual - ultimos_precios[moneda])
+        cambio = abs(precio_actual - precio_anterior)
         umbral = UMBRALES.get(moneda, 0)
 
         if cambio >= umbral:
-            direccion = "📈 SUBIÓ" if precio_actual > ultimos_precios[moneda] else "📉 BAJÓ"
-            emoji = "🟢" if precio_actual > ultimos_precios[moneda] else "🔴"
-            signo = "+" if precio_actual > ultimos_precios[moneda] else ""
+            direccion = "📈 SUBIÓ" if precio_actual > precio_anterior else "📉 BAJÓ"
+            emoji = "🟢" if precio_actual > precio_anterior else "🔴"
+            signo = "+" if precio_actual > precio_anterior else ""
 
-            cambio_porcentaje = ((precio_actual - ultimos_precios[moneda]) / ultimos_precios[moneda] * 100) if ultimos_precios[moneda] != 0 else 0
+            cambio_porcentaje = ((precio_actual - precio_anterior) / precio_anterior * 100) if precio_anterior != 0 else 0
 
             mensaje = (
                 f"\n{emoji} *🔔 ALERTA {moneda}* {emoji}\n\n"
                 f"{direccion} en {signo}{cambio:.2f}\n\n"
                 f"📊 *Detalles:*\n"
-                f"• Referencia Anterior: {ultimos_precios[moneda]:.2f}\n"
+                f"• Referencia Anterior: {precio_anterior:.2f}\n"
                 f"• Precio Actual: {precio_actual:.2f}\n"
                 f"• Variación: {signo}{cambio:.2f} ({signo}{cambio_porcentaje:.2f}%)\n\n"
                 f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
@@ -503,16 +763,18 @@ def verificar_alertas(precios):
                 try:
                     enviar_mensaje(usuario, mensaje)
                     time.sleep(0.05)
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"Error enviando alerta a {usuario}: {e}")
 
-            ultimos_precios[moneda] = precio_actual
+            estado.actualizar_precio(moneda, precio_actual)
 
+# ==================== FUNCIONES DE PRECIOS ====================
 def mostrar_precios_usdt(chat_id):
     precios = {}
     for m in ['VES', 'COP', 'PEN']:
         compra, venta = obtener_precios_con_cache(m)
-        if compra and venta: precios[m] = {'compra': compra, 'venta': venta}
+        if compra and venta: 
+            precios[m] = {'compra': compra, 'venta': venta}
     if not precios:
         enviar_mensaje(chat_id, "⏳ Obteniendo precios...", crear_teclado_opciones(chat_id))
         return
@@ -531,7 +793,6 @@ def mostrar_precio_individual(chat_id, moneda):
     enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
 # ==================== TETHER + BCV ====================
-
 def mostrar_tether_vs_bcv(chat_id):
     compra, venta = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
@@ -540,7 +801,6 @@ def mostrar_tether_vs_bcv(chat_id):
         enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
         return
 
-    # Tasa BCV Oficial e Intervención (+0.50% de comisión)
     tasa_bcv_oficial = tasas['usd']
     tasa_intervencion = tasa_bcv_oficial * 1.005
     media = (compra + venta) / 2.0
@@ -557,7 +817,6 @@ def mostrar_tether_vs_bcv(chat_id):
         var_pct = 0.0
         tendencia_str = "➡️ Lateral"
 
-    # Cálculos de brechas
     brecha_compra_bcv = compra - tasa_bcv_oficial
     pct_compra_bcv = (brecha_compra_bcv / tasa_bcv_oficial) * 100 if tasa_bcv_oficial > 0 else 0.0
 
@@ -591,33 +850,27 @@ def mostrar_tether_vs_bcv(chat_id):
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 # ==================== FUNCIÓN MODIFICADA: CUÁNTO GANÉ ====================
-
 def calcular_ganancia_neta(chat_id, monto=100.0):
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
-    
+
     if not venta_ves or not tasas:
         enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
         return
-
-    # 1. Tasa BCV Oficial y Costo de Intervención
+    
     tasa_bcv = tasas['usd']
     bcv_mas_medio = tasa_bcv * 1.005
     costo_bcv_monto = monto * bcv_mas_medio
 
-    # 2. Comisiones Banesco (1.5% Tarjeta + 4.1% Bpay)
     comision_tarjeta = monto * 0.015
     comision_bpay = monto * 0.041
     total_comisiones = comision_tarjeta + comision_bpay
 
-    # 3. Liquidación Final
     usdt_neto = monto - total_comisiones
 
-    # 4. Retorno en P2P
     total_retornado_bs = usdt_neto * venta_ves
     equivalente_usd_bcv = total_retornado_bs / tasa_bcv if tasa_bcv > 0 else 0.0
 
-    # 5. Resultados de Ganancia
     ganancia_bs = total_retornado_bs - costo_bcv_monto
     ganancia_usd = equivalente_usd_bcv - monto
     rendimiento_pct = (ganancia_usd / monto) * 100 if monto > 0 else 0.0
@@ -710,7 +963,8 @@ def calcular_conversion_bcv_medio(chat_id, texto_monto):
 🇻🇪 *Total equivalente:* *{bs_mas_medio:,.2f} Bs*
 ━━━━━━━━━━━━━━━━━━━━"""
             enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
-    except: pass
+    except Exception as e:
+        logger.error(f"Error en conversión BCV: {e}")
 
 def mostrar_historial_ves(chat_id):
     analisis = obtener_analisis_ves()
@@ -721,12 +975,12 @@ def mostrar_historial_ves(chat_id):
     enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 # ==================== PROCESAR MENSAJES ====================
-
 def procesar_mensaje(chat_id, texto):
     global usuario_esperando_calculo, usuario_esperando_cruzado, usuario_configurando_soles
     global TASA_SOLES_TARIFARIO
 
-    if not usuario_esta_en_grupo(chat_id): return
+    if not usuario_esta_en_grupo(chat_id): 
+        return
     guardar_usuario(chat_id)
 
     if chat_id == ADMIN_ID and usuario_configurando_soles.get(chat_id):
@@ -735,7 +989,8 @@ def procesar_mensaje(chat_id, texto):
             usuario_configurando_soles[chat_id] = False  
             enviar_mensaje(chat_id, f"✅ *Tasa Soles configurada con éxito:* {TASA_SOLES_TARIFARIO:.2f}", crear_teclado_remesas(chat_id))
             return
-        except ValueError: pass  
+        except ValueError:
+            pass  
 
     if any(char.isdigit() for char in texto):
         if usuario_esperando_cruzado.get(chat_id) or 's/' in texto.lower() or 'soles' in texto.lower():
@@ -779,10 +1034,12 @@ def procesar_mensaje(chat_id, texto):
             enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(chat_id))
 
     elif texto == '📋 Tarifario USD':
-        if chat_id == ADMIN_ID: mostrar_tarifario_usd(chat_id)
+        if chat_id == ADMIN_ID: 
+            mostrar_tarifario_usd(chat_id)
 
     elif texto == '📋 Tarifario Soles':
-        if chat_id == ADMIN_ID: mostrar_tarifario_soles(chat_id)
+        if chat_id == ADMIN_ID: 
+            mostrar_tarifario_soles(chat_id)
 
     elif texto == '⚙️ Ajustar Tasa':
         if chat_id == ADMIN_ID:
@@ -796,16 +1053,21 @@ def procesar_mensaje(chat_id, texto):
     elif texto == '+ Opciones':
         enviar_mensaje(chat_id, "📋 *SEGUNDO MENÚ (MERCADO P2P)*", crear_teclado_opciones(chat_id))
 
-    elif texto == 'Precio USDT': mostrar_precios_usdt(chat_id)
-    elif texto == 'Precio VES': mostrar_precio_individual(chat_id, 'VES')
-    elif texto == 'Precio COP': mostrar_precio_individual(chat_id, 'COP')
-    elif texto == 'Precio PEN': mostrar_precio_individual(chat_id, 'PEN')
+    elif texto == 'Precio USDT': 
+        mostrar_precios_usdt(chat_id)
+    elif texto == 'Precio VES': 
+        mostrar_precio_individual(chat_id, 'VES')
+    elif texto == 'Precio COP': 
+        mostrar_precio_individual(chat_id, 'COP')
+    elif texto == 'Precio PEN': 
+        mostrar_precio_individual(chat_id, 'PEN')
 
     elif texto == 'Usuarios Registrados':
         if chat_id == ADMIN_ID:
             usuarios = obtener_usuarios()
             mensaje = f"👥 *Usuarios activos:* {len(usuarios)}"
-            for uid in usuarios: mensaje += f"\n• `{uid}`"
+            for uid in usuarios: 
+                mensaje += f"\n• `{uid}`"
             enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(chat_id))
 
     elif texto == 'Volver al menú anterior':
@@ -817,43 +1079,164 @@ def procesar_mensaje(chat_id, texto):
     else:
         try:
             monto_usuario = float(texto.replace(',', '.'))
-            if monto_usuario > 0: calcular_ganancia_neta(chat_id, monto_usuario)
+            if monto_usuario > 0: 
+                calcular_ganancia_neta(chat_id, monto_usuario)
         except ValueError:
             enviar_mensaje(chat_id, "Comando no reconocido.", crear_teclado_principal(chat_id))
 
-# ==================== RUTAS FLASK Y WEBHOOK ====================
+# ==================== HEALTH CHECKS (PROBLEMA 4) ====================
+def check_binance_connection():
+    try:
+        compra, venta = obtener_precios_p2p_reales('VES')
+        return {'status': 'ok', 'has_data': compra is not None}
+    except Exception as e:
+        logger.error(f"Error en check_binance_connection: {e}")
+        return {'status': 'error', 'message': str(e)[:100]}
+
+def check_bcv_connection():
+    try:
+        tasa = obtener_tasa_bcv_actual()
+        return {'status': 'ok', 'tasa': tasa}
+    except Exception as e:
+        logger.error(f"Error en check_bcv_connection: {e}")
+        return {'status': 'error', 'message': str(e)[:100]}
+
+start_time = time.time()
 
 @app.route('/', methods=['GET'])
 def home():
-    return f"Bot activo 24/7 | Muestras: {len(historial_ves)}", 200
+    return f"Bot activo 24/7 | Muestras: {len(estado.obtener_historial_ves())}", 200
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Endpoint de health check completo"""
+    historial = estado.obtener_historial_ves()
+    stats_cache = cache_precios.get_stats()
+    
+    status = {
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'metrics': {
+            'usuarios_activos': len(usuarios_activos),
+            'historial_ves': len(historial),
+            'cache_size': stats_cache['size'],
+            'ultima_actualizacion': cache_tiempo.get('VES', 0),
+            'uptime_segundos': int(time.time() - start_time)
+        },
+        'dependencies': {
+            'binance': check_binance_connection(),
+            'bcv_api': check_bcv_connection()
+        },
+        'rate_limiter': rate_limiter.get_stats(),
+        'metricas': metricas.obtener_metricas()
+    }
+    
+    # Verificar si la última actualización fue hace más de 5 minutos
+    if cache_tiempo.get('VES', 0) < time.time() - 300:
+        status['status'] = 'degraded'
+        status['message'] = 'Última actualización de precios hace más de 5 minutos'
+    
+    return jsonify(status)
+
+@app.route('/metrics', methods=['GET'])
+def get_metrics():
+    """Endpoint para obtener métricas detalladas"""
+    return jsonify({
+        'timestamp': datetime.now().isoformat(),
+        'metricas': metricas.obtener_metricas(),
+        'rate_limiter': rate_limiter.get_stats(),
+        'cache': cache_precios.get_stats()
+    })
+
+# ==================== WEBHOOK CON RECONEXIÓN (PROBLEMA 6) ====================
+def configurar_webhook_con_reintentos(max_retries=5, delay=5):
+    """Configura el webhook con sistema de reintentos"""
+    url_app = os.environ.get('URL_APP', 'https://telegram-usdt-bot-vf5t.onrender.com')
+    url_set = f"{URL_TELEGRAM}setWebhook?url={url_app}/{TOKEN}"
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url_set, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    logger.info(f"Webhook configurado exitosamente: {data}")
+                    return True
+                else:
+                    logger.warning(f"Error configurando webhook: {data}")
+            else:
+                logger.warning(f"HTTP {response.status_code} configurando webhook")
+        except Exception as e:
+            logger.error(f"Intento {attempt + 1}/{max_retries} falló: {e}")
+        
+        if attempt < max_retries - 1:
+            time.sleep(delay * (attempt + 1))  # Backoff exponencial
+    
+    logger.error("No se pudo configurar el webhook después de todos los reintentos")
+    return False
+
+def monitorear_webhook():
+    """Monitorea el webhook periódicamente y lo reconecta si es necesario"""
+    url_app = os.environ.get('URL_APP', 'https://telegram-usdt-bot-vf5t.onrender.com')
+    
+    while True:
+        try:
+            url_get = f"{URL_TELEGRAM}getWebhookInfo"
+            response = requests.get(url_get, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    info = data.get('result', {})
+                    current_url = info.get('url', '')
+                    expected_url = f"{url_app}/{TOKEN}"
+                    
+                    if current_url != expected_url:
+                        logger.warning(f"Webhook no configurado correctamente. Actual: {current_url}, Esperado: {expected_url}")
+                        configurar_webhook_con_reintentos()
+                    else:
+                        logger.info("Webhook verificado correctamente")
+        except Exception as e:
+            logger.error(f"Error monitoreando webhook: {e}")
+        
+        time.sleep(300)  # Cada 5 minutos
 
 @app.route(f'/{TOKEN}', methods=['POST'])
 def telegram_webhook():
     if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = json.loads(json_string)
-
-        message = update.get('message')
-        if message:
-            chat_id = message.get('chat', {}).get('id')
-            texto = message.get('text', '')
-            if chat_id and texto:
-                threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
-
-        return 'OK', 200
+        try:
+            json_string = request.get_data().decode('utf-8')
+            update = json.loads(json_string)
+            
+            message = update.get('message')
+            if message:
+                chat_id = message.get('chat', {}).get('id')
+                texto = message.get('text', '')
+                
+                if chat_id and texto:
+                    # Obtener IP del cliente para rate limiting
+                    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+                    
+                    # Verificar rate limit
+                    if not rate_limiter.check_limit(chat_id, ip):
+                        enviar_mensaje(chat_id, "⏳ Demasiadas solicitudes. Espera un momento.")
+                        return 'OK', 200
+                    
+                    # Procesar en hilo separado
+                    threading.Thread(target=procesar_mensaje, args=(chat_id, texto)).start()
+            
+            return 'OK', 200
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decodificando JSON: {e}")
+            return 'Bad Request', 400
+        except Exception as e:
+            logger.error(f"Error en webhook: {e}\n{traceback.format_exc()}")
+            return 'Internal Server Error', 500
+    
     return 'Forbidden', 403
 
-def configurar_webhook():
-    url_app = "https://telegram-usdt-bot-vf5t.onrender.com"
-    url_set = f"{URL_TELEGRAM}setWebhook?url={url_app}/{TOKEN}"
-    try:
-        r = requests.get(url_set, timeout=10)
-        print("Webhook configurado:", r.json())
-    except Exception as e:
-        print("Error configurando Webhook:", e)
-
+# ==================== ACTUALIZACIÓN DE PRECIOS (PROBLEMA 9) ====================
+@metricas.medir_tiempo('actualizar_precios')
 def actualizar_precios():
-    global cache_precios, cache_tiempo, ultimos_precios
     while True:
         try:
             precios = {}
@@ -861,20 +1244,32 @@ def actualizar_precios():
                 compra, venta = obtener_precios_p2p_reales(m)
                 if compra and venta:
                     precios[m] = {'compra': compra, 'venta': venta}
-                    cache_precios[m] = {'compra': compra, 'venta': venta}
+                    cache_precios.set(m, {'compra': compra, 'venta': venta})
                     cache_tiempo[m] = time.time()
-                    if m == 'VES': guardar_historial_ves(compra)
+                    if m == 'VES': 
+                        estado.agregar_historial_ves(compra)
+            
             if precios:
                 verificar_alertas(precios)
                 verificar_fluctuacion_tasas()
+            
             time.sleep(60)
-        except: time.sleep(60)
+        except Exception as e:
+            logger.error(f"Error en actualizar_precios: {e}\n{traceback.format_exc()}")
+            time.sleep(60)
 
 if __name__ == "__main__":
     cargar_tasas_anteriores()
-    configurar_webhook()
-
+    
+    # Configurar webhook con reintentos
+    if not configurar_webhook_con_reintentos():
+        logger.warning("El bot iniciará pero el webhook podría no funcionar correctamente")
+    
+    # Iniciar hilo de monitoreo de webhook
+    threading.Thread(target=monitorear_webhook, daemon=True).start()
+    
+    # Iniciar hilo de actualización de precios
     threading.Thread(target=actualizar_precios, daemon=True).start()
-
+    
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

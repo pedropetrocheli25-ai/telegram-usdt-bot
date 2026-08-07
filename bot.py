@@ -24,6 +24,19 @@ if not TOKEN or not ADMIN_ID:
 ADMIN_ID = int(ADMIN_ID)
 URL_TELEGRAM = f"https://api.telegram.org/bot{TOKEN}/"
 
+# ID de tu grupo o canal privado para restringir acceso (debe empezar con -100)
+ID_CANAL_O_GRUPO = int(os.environ.get('ID_CANAL_O_GRUPO', '-1001234567890'))
+
+# URL de Render para Self-Ping
+RENDER_URL = "https://telegram-usdt-bot-vf5t.onrender.com"
+
+# Caché en memoria para control de acceso (TTL: 5 minutos)
+CACHE_USUARIOS = {}
+TIEMPO_CACHE_USUARIOS = 300
+
+# Lock para guardado seguro de config.json
+config_lock = threading.Lock()
+
 app = Flask(__name__)
 
 # ==================== CONSTANTES FINANCIERAS ====================
@@ -36,20 +49,22 @@ TASA_SOLES_TARIFARIO = 3.80
 
 def cargar_configuracion():
     global TASA_SOLES_TARIFARIO
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r') as f:
-                data = json.load(f)
-                TASA_SOLES_TARIFARIO = data.get('tasa_soles', 3.80)
-    except Exception as e:
-        print(f"Error al cargar config.json: {e}")
+    with config_lock:
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+                    TASA_SOLES_TARIFARIO = data.get('tasa_soles', 3.80)
+        except Exception as e:
+            print(f"Error al cargar config.json: {e}")
 
 def guardar_configuracion():
-    try:
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump({'tasa_soles': TASA_SOLES_TARIFARIO}, f)
-    except Exception as e:
-        print(f"Error al guardar config.json: {e}")
+    with config_lock:
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump({'tasa_soles': TASA_SOLES_TARIFARIO}, f)
+        except Exception as e:
+            print(f"Error al guardar config.json: {e}")
 
 # ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {
@@ -61,9 +76,35 @@ UMBRALES = {
 FLUCTUACION_UMBRAL = 0.8
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 
-# ==================== CONTROL DE ACCESO ====================
+# ==================== CONTROL DE ACCESO (MEJORADO CON CACHÉ) ====================
 def usuario_esta_en_grupo(user_id):
-    return True
+    """
+    Verifica si el usuario pertenece al grupo/canal autorizado mediante la API de Telegram.
+    Aplica caché de 5 minutos y siempre autoriza al ADMIN_ID.
+    """
+    if user_id == ADMIN_ID:
+        return True
+
+    ahora = time.time()
+    if user_id in CACHE_USUARIOS:
+        es_valido, timestamp = CACHE_USUARIOS[user_id]
+        if ahora - timestamp < TIEMPO_CACHE_USUARIOS:
+            return es_valido
+
+    try:
+        url = f"{URL_TELEGRAM}getChatMember"
+        response = requests.post(url, json={"chat_id": ID_CANAL_O_GRUPO, "user_id": user_id}, timeout=8)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("ok"):
+                status = data.get("result", {}).get("status", "")
+                es_miembro = status in ['creator', 'administrator', 'member']
+                CACHE_USUARIOS[user_id] = (es_miembro, ahora)
+                return es_miembro
+    except Exception as e:
+        print(f"Error verificando acceso para usuario {user_id}: {e}")
+
+    return False  # Fail-closed por seguridad
 
 usuarios_activos = set([ADMIN_ID])
 def obtener_usuarios():
@@ -151,7 +192,7 @@ def enviar_mensaje(chat_id, texto, teclado=None):
         print(f"Error al enviar mensaje Telegram: {e}")
         return False
 
-# ==================== OBTENCIÓN P2P Y BCV ====================
+# ==================== OBTENCIÓN P2P Y BCV (DOLARAPI INTEGRADAS) ====================
 
 def obtener_precios_con_cache(fiat):
     global cache_precios, cache_tiempo
@@ -223,6 +264,26 @@ def obtener_tasa_bcv_actual():
     return 45.00 
 
 def obtener_tasas_bcv():
+    """
+    Consulta las tasas oficiales vigentes (USD y EUR) usando DolarApi.
+    Mantiene fallback secundario a ExchangeRate-API.
+    """
+    tasas = {'usd': 0.0, 'eur': 0.0, 'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+    try:
+        r_usd = requests.get("https://ve.dolarapi.com/v1/dolares/oficial", timeout=8)
+        if r_usd.status_code == 200:
+            tasas['usd'] = float(r_usd.json().get("promedio", 0))
+
+        r_eur = requests.get("https://ve.dolarapi.com/v1/euros/oficial", timeout=8)
+        if r_eur.status_code == 200:
+            tasas['eur'] = float(r_eur.json().get("promedio", 0))
+
+        if tasas['usd'] > 0:
+            return tasas
+    except Exception as e:
+        print(f"Error consultando DolarApi: {e}")
+
+    # Fallback si DolarApi no responde
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         r = requests.get(url, timeout=10)
@@ -620,7 +681,7 @@ def mostrar_tether_vs_bcv(chat_id):
 def calcular_ganancia_neta(chat_id, monto=100.0):
     compra_ves, venta_ves = obtener_precios_con_cache('VES')
     tasas = obtener_tasas_bcv()
-    
+
     if not venta_ves or not tasas:
         enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
         return
@@ -752,7 +813,11 @@ def procesar_mensaje(chat_id, texto):
     global usuario_esperando_calculo, usuario_esperando_cruzado, usuario_configurando_soles
     global TASA_SOLES_TARIFARIO
 
-    if not usuario_esta_en_grupo(chat_id): return
+    # Validación de acceso restringido por grupo/canal
+    if not usuario_esta_en_grupo(chat_id):
+        enviar_mensaje(chat_id, "⛔ *Acceso Denegado*\n\nDebes ser miembro del grupo o canal autorizado para utilizar este bot.")
+        return
+
     guardar_usuario(chat_id)
 
     # Configuración de tasa por el admin
@@ -898,13 +963,32 @@ def telegram_webhook():
     return 'Forbidden', 403
 
 def configurar_webhook():
-    url_app = "https://telegram-usdt-bot-vf5t.onrender.com"
+    url_app = RENDER_URL
     url_set = f"{URL_TELEGRAM}setWebhook?url={url_app}/{TOKEN}"
     try:
         r = requests.get(url_set, timeout=10)
         print("Webhook configurado:", r.json())
     except Exception as e:
         print("Error configurando Webhook:", e)
+
+# ==================== HILO SELF-PING PARA RENDER ====================
+
+def iniciar_self_ping():
+    """
+    Realiza peticiones HTTP periódicas a la app en Render cada 4.5 minutos (270s)
+    para impedir el paso a modo suspensión (Sleep Mode).
+    """
+    def ping():
+        time.sleep(10)  # Breve espera inicial mientras sube el servidor Flask
+        while True:
+            try:
+                res = requests.get(RENDER_URL, timeout=10)
+                print(f"[Self-Ping] Status: {res.status_code}")
+            except Exception as e:
+                print(f"[Self-Ping Error]: {e}")
+            time.sleep(270)
+
+    threading.Thread(target=ping, daemon=True).start()
 
 def actualizar_precios():
     global cache_precios, cache_tiempo, ultimos_precios
@@ -931,6 +1015,8 @@ if __name__ == "__main__":
     cargar_tasas_anteriores()
     configurar_webhook()
 
+    # Iniciar hilos en segundo plano
+    iniciar_self_ping()
     threading.Thread(target=actualizar_precios, daemon=True).start()
 
     port = int(os.environ.get('PORT', 8080))

@@ -76,35 +76,12 @@ UMBRALES = {
 FLUCTUACION_UMBRAL = 0.8
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 
-# ==================== CONTROL DE ACCESO (MEJORADO CON CACHÉ) ====================
+# ==================== CONTROL DE ACCESO (DESACTIVADO) ====================
 def usuario_esta_en_grupo(user_id):
     """
-    Verifica si el usuario pertenece al grupo/canal autorizado mediante la API de Telegram.
-    Aplica caché de 5 minutos y siempre autoriza al ADMIN_ID.
+    Control de acceso liberado: Permite el acceso a cualquier usuario de forma transparente.
     """
-    if user_id == ADMIN_ID:
-        return True
-
-    ahora = time.time()
-    if user_id in CACHE_USUARIOS:
-        es_valido, timestamp = CACHE_USUARIOS[user_id]
-        if ahora - timestamp < TIEMPO_CACHE_USUARIOS:
-            return es_valido
-
-    try:
-        url = f"{URL_TELEGRAM}getChatMember"
-        response = requests.post(url, json={"chat_id": ID_CANAL_O_GRUPO, "user_id": user_id}, timeout=8)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("ok"):
-                status = data.get("result", {}).get("status", "")
-                es_miembro = status in ['creator', 'administrator', 'member']
-                CACHE_USUARIOS[user_id] = (es_miembro, ahora)
-                return es_miembro
-    except Exception as e:
-        print(f"Error verificando acceso para usuario {user_id}: {e}")
-
-    return False  # Fail-closed por seguridad
+    return True
 
 usuarios_activos = set([ADMIN_ID])
 def obtener_usuarios():

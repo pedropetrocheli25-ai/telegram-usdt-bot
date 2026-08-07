@@ -76,7 +76,7 @@ UMBRALES = {
 FLUCTUACION_UMBRAL = 0.8
 ultimos_precios = {'VES': None, 'COP': None, 'PEN': None}
 
-# ==================== CONTROL DE ACCESO (DESACTIVADO) ====================
+# ==================== CONTROL DE ACCESO (LIBERADO) ====================
 def usuario_esta_en_grupo(user_id):
     """
     Control de acceso liberado: Permite el acceso a cualquier usuario de forma transparente.
@@ -103,14 +103,14 @@ usuario_esperando_calculo = {}
 usuario_esperando_cruzado = {}  
 usuario_configurando_soles = {}  
 
-def limpiar_estados_usuario(chat_id):
-    usuario_esperando_calculo.pop(chat_id, None)
-    usuario_esperando_cruzado.pop(chat_id, None)
-    usuario_configurando_soles.pop(chat_id, None)
+def limpiar_estados_usuario(user_id):
+    usuario_esperando_calculo.pop(user_id, None)
+    usuario_esperando_cruzado.pop(user_id, None)
+    usuario_configurando_soles.pop(user_id, None)
 
 # ==================== INTERFACES DE TECLADOS MEJORADAS ====================
 
-def crear_teclado_principal(chat_id):
+def crear_teclado_principal(user_id):
     teclado = [
         ["📈 Comparativa P2P vs BCV"],
         ["🧮 Conversor USD / Bs"], 
@@ -118,13 +118,13 @@ def crear_teclado_principal(chat_id):
         ["📈 Historial de brecha VES"]
     ]
 
-    if chat_id == ADMIN_ID:
+    if user_id == ADMIN_ID:
         teclado.append(["💼 Panel de Operaciones"])
 
     teclado.append(["⚙️ Mercado P2P"])
     return {"keyboard": teclado, "resize_keyboard": True}
 
-def crear_teclado_remesas(chat_id):
+def crear_teclado_remesas(user_id):
     teclado = [
         ["💱 Conversor de Remesas"],
         ["📋 Tarifario USD"],
@@ -135,7 +135,7 @@ def crear_teclado_remesas(chat_id):
     ]
     return {"keyboard": teclado, "resize_keyboard": True}
 
-def crear_teclado_opciones(chat_id):
+def crear_teclado_opciones(user_id):
     teclado = [
         ["📊 P2P Multidivisa"],
         ["🇻🇪 Tasa VES"],
@@ -143,13 +143,13 @@ def crear_teclado_opciones(chat_id):
         ["🇵🇪 Tasa PEN"]
     ]
 
-    if chat_id == ADMIN_ID:
+    if user_id == ADMIN_ID:
         teclado.append(["👥 Usuarios Registrados"])
 
     teclado.append(["⬅️ Volver al Menú"])
     return {"keyboard": teclado, "resize_keyboard": True}
 
-def crear_teclado_cruzado_rapido(chat_id):
+def crear_teclado_cruzado_rapido(user_id):
     teclado = [
         ["20 S/", "50 S/", "100 S/"],
         ["5000 Bs", "10000 Bs", "20000 Bs"],
@@ -241,10 +241,6 @@ def obtener_tasa_bcv_actual():
     return 45.00 
 
 def obtener_tasas_bcv():
-    """
-    Consulta las tasas oficiales vigentes (USD y EUR) usando DolarApi.
-    Mantiene fallback secundario a ExchangeRate-API.
-    """
     tasas = {'usd': 0.0, 'eur': 0.0, 'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     try:
         r_usd = requests.get("https://ve.dolarapi.com/v1/dolares/oficial", timeout=8)
@@ -260,7 +256,6 @@ def obtener_tasas_bcv():
     except Exception as e:
         print(f"Error consultando DolarApi: {e}")
 
-    # Fallback si DolarApi no responde
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         r = requests.get(url, timeout=10)
@@ -603,7 +598,6 @@ def mostrar_tether_vs_bcv(chat_id):
         enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
         return
 
-    # Tasa BCV Oficial e Intervención (+0.50% de comisión)
     tasa_bcv_oficial = tasas['usd']
     tasa_intervencion = tasa_bcv_oficial * 1.005
     media = (compra + venta) / 2.0
@@ -620,7 +614,6 @@ def mostrar_tether_vs_bcv(chat_id):
         var_pct = 0.0
         tendencia_str = "➡️ Lateral"
 
-    # Cálculos de brechas
     brecha_compra_bcv = compra - tasa_bcv_oficial
     pct_compra_bcv = (brecha_compra_bcv / tasa_bcv_oficial) * 100 if tasa_bcv_oficial > 0 else 0.0
 
@@ -663,24 +656,19 @@ def calcular_ganancia_neta(chat_id, monto=100.0):
         enviar_mensaje(chat_id, "⏳ Obteniendo precios del mercado...", crear_teclado_principal(chat_id))
         return
 
-    # 1. Tasa BCV Oficial y Costo de Intervención
     tasa_bcv = tasas['usd']
     bcv_mas_medio = tasa_bcv * 1.005
     costo_bcv_monto = monto * bcv_mas_medio
 
-    # 2. Comisiones Banesco mediante constantes globales
     comision_tarjeta = monto * COMISION_TARJETA_PCT
     comision_bpay = monto * COMISION_BPAY_PCT
     total_comisiones = comision_tarjeta + comision_bpay
 
-    # 3. Liquidación Final
     usdt_neto = monto - total_comisiones
 
-    # 4. Retorno en P2P
     total_retornado_bs = usdt_neto * venta_ves
     equivalente_usd_bcv = total_retornado_bs / tasa_bcv if tasa_bcv > 0 else 0.0
 
-    # 5. Resultados de Ganancia
     ganancia_bs = total_retornado_bs - costo_bcv_monto
     ganancia_usd = equivalente_usd_bcv - monto
     rendimiento_pct = (ganancia_usd / monto) * 100 if monto > 0 else 0.0
@@ -790,7 +778,7 @@ def procesar_mensaje(chat_id, user_id, texto):
     global usuario_esperando_calculo, usuario_esperando_cruzado, usuario_configurando_soles
     global TASA_SOLES_TARIFARIO
 
-    # Validación de acceso restringido por grupo/canal verificando a la persona que escribe (user_id)
+    # Control de acceso general
     if not usuario_esta_en_grupo(user_id):
         enviar_mensaje(chat_id, "⛔ *Acceso Denegado*\n\nDebes ser miembro del grupo o canal autorizado para utilizar este bot.")
         return
@@ -798,7 +786,7 @@ def procesar_mensaje(chat_id, user_id, texto):
     guardar_usuario(user_id)
 
     # Configuración de tasa por el admin
-    if user_id == ADMIN_ID and usuario_configurando_soles.get(user_id):
+    if user_id == ADMIN_ID and usuario_configurando_soles.get(user_id, False):
         try:
             TASA_SOLES_TARIFARIO = float(texto.replace(',', '.'))
             guardar_configuracion()
@@ -808,12 +796,12 @@ def procesar_mensaje(chat_id, user_id, texto):
         except ValueError: 
             pass  
 
-    # Detección de entradas numéricas
+    # Detección de entradas numéricas explícitas
     if any(char.isdigit() for char in texto):
-        if usuario_esperando_cruzado.get(user_id) or 's/' in texto.lower() or 'soles' in texto.lower():
+        if usuario_esperando_cruzado.get(user_id, False) or 's/' in texto.lower() or 'soles' in texto.lower():
             calcular_conversion_tasas_cruzadas(chat_id, texto)
             return
-        elif usuario_esperando_calculo.get(user_id) or 'bs' in texto.lower() or '$' in texto or 'usd' in texto.lower():
+        elif usuario_esperando_calculo.get(user_id, False) or 'bs' in texto.lower() or '$' in texto or 'usd' in texto.lower():
             calcular_conversion_bcv_medio(chat_id, texto)
             usuario_esperando_calculo[user_id] = False
             return
@@ -854,7 +842,7 @@ def procesar_mensaje(chat_id, user_id, texto):
         if user_id == ADMIN_ID:
             enviar_mensaje(chat_id, "💼 *PANEL DE OPERACIONES & REMESAS*", crear_teclado_remesas(user_id))
         else:
-            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(user_id))
+            enviar_mensaje(chat_id, "❌ Acción restringida a administradores.", crear_teclado_principal(user_id))
 
     elif texto in ['💱 Conversor de Remesas', '¿Cuánto es Cruzado?']:
         if user_id == ADMIN_ID:
@@ -868,13 +856,19 @@ def procesar_mensaje(chat_id, user_id, texto):
             )
             enviar_mensaje(chat_id, msg, crear_teclado_cruzado_rapido(user_id))
         else:
-            enviar_mensaje(chat_id, "❌ Acción restringida.", crear_teclado_principal(user_id))
+            enviar_mensaje(chat_id, "❌ Acción restringida a administradores.", crear_teclado_principal(user_id))
 
     elif texto == '📋 Tarifario USD':
-        if user_id == ADMIN_ID: mostrar_tarifario_usd(chat_id)
+        if user_id == ADMIN_ID: 
+            mostrar_tarifario_usd(chat_id)
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida a administradores.", crear_teclado_remesas(user_id))
 
     elif texto == '📋 Tarifario Soles':
-        if user_id == ADMIN_ID: mostrar_tarifario_soles(chat_id)
+        if user_id == ADMIN_ID: 
+            mostrar_tarifario_soles(chat_id)
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida a administradores.", crear_teclado_remesas(user_id))
 
     elif texto == '⚙️ Ajustar Tasa':
         if user_id == ADMIN_ID:
@@ -885,10 +879,14 @@ def procesar_mensaje(chat_id, user_id, texto):
                 f"✍️ Envía el nuevo valor de referencia (ejemplo: `3.85`)."
             )
             enviar_mensaje(chat_id, msg, crear_teclado_remesas(user_id))
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida a administradores.", crear_teclado_remesas(user_id))
 
     elif texto in ['🌐 Tasas Cruzadas', 'Tasas Cruzadas']:
         if user_id == ADMIN_ID:
             mostrar_tasas_cambio(chat_id)
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida a administradores.", crear_teclado_remesas(user_id))
 
     elif texto in ['⚙️ Mercado P2P', '+ Opciones']:
         msg = "⚙️ *MONITOREO DE MERCADOS P2P*\n\nSelecciona una opción para consultar las cotizaciones en tiempo real:"
@@ -905,6 +903,8 @@ def procesar_mensaje(chat_id, user_id, texto):
             mensaje = f"👥 *Usuarios activos registrados:* {len(usuarios)}"
             for uid in usuarios: mensaje += f"\n• `{uid}`"
             enviar_mensaje(chat_id, mensaje, crear_teclado_opciones(user_id))
+        else:
+            enviar_mensaje(chat_id, "❌ Acción restringida a administradores.", crear_teclado_opciones(user_id))
 
     elif texto in ['⬅️ Volver al Menú', 'Volver al menú anterior']:
         limpiar_estados_usuario(user_id)
@@ -913,9 +913,13 @@ def procesar_mensaje(chat_id, user_id, texto):
     else:
         try:
             monto_usuario = float(texto.replace(',', '.'))
-            if monto_usuario > 0: calcular_ganancia_neta(chat_id, monto_usuario)
+            if monto_usuario > 0: 
+                calcular_ganancia_neta(chat_id, monto_usuario)
         except ValueError:
-            enviar_mensaje(chat_id, "⚠️ Comando o formato no reconocido. Por favor, selecciona una opción del menú.", crear_teclado_principal(user_id))
+            # En grupos (chat_id < 0) ignoramos el texto no reconocido para evitar spam.
+            # En chats privados (chat_id > 0) sí mostramos la ayuda.
+            if chat_id > 0:
+                enviar_mensaje(chat_id, "⚠️ Comando o formato no reconocido. Por favor, selecciona una opción del menú.", crear_teclado_principal(user_id))
 
 # ==================== RUTAS FLASK Y WEBHOOK ====================
 
@@ -929,10 +933,10 @@ def telegram_webhook():
         json_string = request.get_data().decode('utf-8')
         update = json.loads(json_string)
 
-        message = update.get('message')
+        message = update.get('message') or update.get('edited_message')
         if message:
             chat_id = message.get('chat', {}).get('id')
-            user_id = message.get('from', {}).get('id')  # Se obtiene el ID del usuario real
+            user_id = message.get('from', {}).get('id')
             texto = message.get('text', '')
 
             if chat_id and user_id and texto:
@@ -953,12 +957,8 @@ def configurar_webhook():
 # ==================== HILO SELF-PING PARA RENDER ====================
 
 def iniciar_self_ping():
-    """
-    Realiza peticiones HTTP periódicas a la app en Render cada 4.5 minutos (270s)
-    para impedir el paso a modo suspensión (Sleep Mode).
-    """
     def ping():
-        time.sleep(10)  # Breve espera inicial mientras sube el servidor Flask
+        time.sleep(10)
         while True:
             try:
                 res = requests.get(RENDER_URL, timeout=10)
@@ -994,7 +994,6 @@ if __name__ == "__main__":
     cargar_tasas_anteriores()
     configurar_webhook()
 
-    # Iniciar hilos en segundo plano
     iniciar_self_ping()
     threading.Thread(target=actualizar_precios, daemon=True).start()
 

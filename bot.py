@@ -121,7 +121,8 @@ def crear_teclado_principal(user_id):
     teclado = [
         ["📈 Comparativa P2P vs BCV"],
         ["🧮 Conversor USD / Bs"],
-        ["📊 Calculadora de Margen", "🏛️ Mesa de Cambio"],
+        ["📊 Calculadora de Margen"],
+        [ "🏛️ Mesa de Cambio"],
         ["📈 Historial de brecha VES"],
     ]
 

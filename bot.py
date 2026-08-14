@@ -3,7 +3,9 @@ import os
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from flask import Flask, request
+import requests
 
 # ==================== CONFIGURACIÓN ====================
 os.environ["TZ"] = "America/Caracas"
@@ -36,7 +38,7 @@ app = Flask(__name__)
 # ==================== CONSTANTES Y CONFIGURACIÓN FINANCIERA ====================
 PORCENTAJE_BPAY = 4.1  # 4.1% Comisión Procesamiento Bpay
 
-# Diccionario de Bancos y sus comisiones por tarjeta internacional
+# Diccionario de Bancos de referencia
 BANCOS_COMISIONES = {
     "Venezuela (Física)": 1.5,
     "Venezuela (Digital)": 2.5,
@@ -76,8 +78,6 @@ def guardar_configuracion():
 
 # ==================== ALERTAS DE PRECIO FINANCIERO ====================
 UMBRALES = {"VES": 0.50}
-
-FLUCTUACION_UMBRAL = 0.8
 ultimos_precios = {"VES": None}
 
 
@@ -110,22 +110,30 @@ historial_ves = deque(maxlen=1440)
 usuario_esperando_calculo = {}
 usuario_configurando_soles = {}
 usuario_esperando_margen = {}
+usuario_esperando_tasa_mesa = {}  # Nuevo: Espera la tasa personalizada
+usuario_tasa_mesa = {}  # Guarda la tasa de Mesa de Cambio ingresada
+usuario_modo_calculo = {}  # 'bcv' o 'mesa_cambio'
+usuario_monto_temporal = {}  # Guarda el monto ingresado para aplicar la comisión elegida
 
 
 def limpiar_estados_usuario(user_id):
   usuario_esperando_calculo.pop(user_id, None)
   usuario_configurando_soles.pop(user_id, None)
   usuario_esperando_margen.pop(user_id, None)
+  usuario_esperando_tasa_mesa.pop(user_id, None)
+  usuario_tasa_mesa.pop(user_id, None)
+  usuario_modo_calculo.pop(user_id, None)
+  usuario_monto_temporal.pop(user_id, None)
 
 
-# ==================== INTERFACES DE TECLADOS MEJORADAS ====================
+# ==================== INTERFACES DE TECLADOS ====================
 
 
 def crear_teclado_principal(user_id):
   teclado = [
       ["📈 Comparativa P2P vs BCV"],
       ["🧮 Conversor USD / Bs"],
-      ["📊 Calculadora de Margen"],
+      ["📊 Calculadora de Margen", "🏛️ Mesa de Cambio"],  # Nuevo botón agregado
       ["📈 Historial de brecha VES"],
   ]
 
@@ -156,17 +164,32 @@ def crear_teclado_opciones(user_id):
   return {"keyboard": teclado, "resize_keyboard": True}
 
 
-def crear_teclado_bancos():
-  # Creamos el teclado inline con los bancos disponibles
-  teclado = []
-  fila = []
-  for banco in BANCOS_COMISIONES.keys():
-    fila.append({"text": banco, "callback_data": f"banco:{banco}"})
-    if len(fila) == 2:
-      teclado.append(fila)
-      fila = []
-  if fila:
-    teclado.append(fila)
+def crear_teclado_comisiones_y_bancos():
+  """Genera el menú interactivo para elegir la comisión específica o un banco."""
+  teclado = [
+      # Fila de selección directa de porcentaje de tarjeta
+      [
+          {"text": "💳 1.5%", "callback_data": "pct:1.5"},
+          {"text": "💳 2.0%", "callback_data": "pct:2.0"},
+      ],
+      [
+          {"text": "💳 2.5%", "callback_data": "pct:2.5"},
+          {"text": "💳 5.0%", "callback_data": "pct:5.0"},
+      ],
+  ]
+
+  # Bancos preconfigurados opcionales
+  fila_bancos = []
+  for banco, pct in BANCOS_COMISIONES.items():
+    fila_bancos.append(
+        {"text": f"🏛️ {banco} ({pct}%)", "callback_data": f"banco:{banco}"}
+    )
+    if len(fila_bancos) == 2:
+      teclado.append(fila_bancos)
+      fila_bancos = []
+  if fila_bancos:
+    teclado.append(fila_bancos)
+
   return {"inline_keyboard": teclado}
 
 
@@ -175,10 +198,7 @@ def enviar_mensaje(chat_id, texto, teclado=None, tipo="reply"):
     url = URL_TELEGRAM + "sendMessage"
     data = {"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"}
     if teclado:
-      if tipo == "inline":
-        data["reply_markup"] = teclado
-      else:
-        data["reply_markup"] = teclado
+      data["reply_markup"] = teclado
     response = requests.post(url, json=data, timeout=10)
     return response.status_code == 200
   except Exception as e:
@@ -224,35 +244,28 @@ def obtener_precios_p2p_reales(fiat):
       if r.status_code == 200:
         result = r.json()
         if result.get("data"):
-          precios = []
-          for a in result["data"]:
-            p = float(a["adv"]["price"])
-            if 1 < p < 100000:
-              precios.append(p)
+          precios = [
+              float(a["adv"]["price"])
+              for a in result["data"]
+              if 1 < float(a["adv"]["price"]) < 100000
+          ]
           if precios:
             compra = min(precios)
     except Exception as e:
       print(f"Error P2P SELL ({fiat}): {e}")
 
-    data = {
-        "asset": "USDT",
-        "fiat": fiat,
-        "tradeType": "BUY",
-        "page": 1,
-        "rows": 10,
-        "payTypes": [],
-    }
+    data["tradeType"] = "BUY"
     venta = None
     try:
       r = requests.post(url, json=data, headers=headers, timeout=10)
       if r.status_code == 200:
         result = r.json()
         if result.get("data"):
-          precios = []
-          for a in result["data"]:
-            p = float(a["adv"]["price"])
-            if 1 < p < 100000:
-              precios.append(p)
+          precios = [
+              float(a["adv"]["price"])
+              for a in result["data"]
+              if 1 < float(a["adv"]["price"]) < 100000
+          ]
           if precios:
             venta = max(precios)
     except Exception as e:
@@ -313,7 +326,7 @@ def obtener_tasas_bcv():
   return None
 
 
-# ==================== MOSTRAR TARIFARIOS EN TEXTO ====================
+# ==================== TARIFARIOS EN TEXTO ====================
 
 
 def mostrar_tarifario_usd(chat_id):
@@ -364,17 +377,13 @@ def guardar_historial_ves(precio):
 
 
 def obtener_analisis_ves():
-  if not historial_ves:
+  if not historial_ves or len(historial_ves) < 2:
     return None
   precios = list(historial_ves)
-  if len(precios) < 2:
-    return None
   precio_actual = precios[-1]
   precio_inicio = precios[0]
   cambio = precio_actual - precio_inicio
   cambio_porcentaje = (cambio / precio_inicio) * 100 if precio_inicio != 0 else 0
-  precio_max = max(precios)
-  precio_min = min(precios)
   tendencia = (
       "↗️ Alcista" if len(precios) > 10 and precios[-1] > precios[-10] else "↘️ Bajista"
   )
@@ -385,8 +394,8 @@ def obtener_analisis_ves():
       "apertura": precio_inicio,
       "cambio": cambio,
       "cambio_porcentaje": cambio_porcentaje,
-      "maximo": precio_max,
-      "minimo": precio_min,
+      "maximo": max(precios),
+      "minimo": min(precios),
       "tendencia": tendencia,
       "muestras": len(precios),
   }
@@ -491,15 +500,13 @@ def mostrar_tether_vs_bcv(chat_id):
 
   analisis = obtener_analisis_ves()
   if analisis:
-    max_24h = analisis["maximo"]
-    min_24h = analisis["minimo"]
-    var_pct = analisis["cambio_porcentaje"]
-    tendencia_str = analisis["tendencia"]
+    max_24h, min_24h = analisis["maximo"], analisis["minimo"]
+    var_pct, tendencia_str = (
+        analisis["cambio_porcentaje"],
+        analisis["tendencia"],
+    )
   else:
-    max_24h = compra
-    min_24h = compra
-    var_pct = 0.0
-    tendencia_str = "➡️ Lateral"
+    max_24h, min_24h, var_pct, tendencia_str = compra, compra, 0.0, "➡️ Lateral"
 
   brecha_compra_bcv = compra - tasa_bcv_oficial
   pct_compra_bcv = (
@@ -546,10 +553,12 @@ def mostrar_tether_vs_bcv(chat_id):
   enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
 
 
-# ==================== CALCULADORA DE MARGEN DINÁMICA ====================
+# ==================== CALCULADORAS DE MARGEN (BCV Y MESA DE CAMBIO) ====================
 
 
-def calcular_ganancia_neta(chat_id, monto=100.0, nombre_banco="Banesco (Digital)"):
+def calcular_ganancia_neta(
+    chat_id, monto=100.0, pct_tarjeta=1.5, etiqueta_fuente=None
+):
   compra_ves, venta_ves = obtener_precios_con_cache("VES")
   tasas = obtener_tasas_bcv()
 
@@ -561,7 +570,6 @@ def calcular_ganancia_neta(chat_id, monto=100.0, nombre_banco="Banesco (Digital)
     )
     return
 
-  pct_tarjeta = BANCOS_COMISIONES.get(nombre_banco, 1.5)
   comision_tarjeta_pct = pct_tarjeta / 100.0
   comision_bpay_pct = PORCENTAJE_BPAY / 100.0
 
@@ -583,8 +591,14 @@ def calcular_ganancia_neta(chat_id, monto=100.0, nombre_banco="Banesco (Digital)
   rendimiento_pct = (ganancia_usd / monto) * 100 if monto > 0 else 0.0
   ganancia_por_dolar = ganancia_usd / monto if monto > 0 else 0.0
 
-  mensaje = f"""🏦 *ANÁLISIS DE MARGEN Y LIQUIDACIÓN*
-💳 *Banco:* {nombre_banco} ({pct_tarjeta}% Tarjeta)
+  detalle_tarjeta = (
+      f"{etiqueta_fuente} ({pct_tarjeta}%)"
+      if etiqueta_fuente
+      else f"{pct_tarjeta}% Tarjeta Internacional"
+  )
+
+  mensaje = f"""🏦 *ANÁLISIS DE MARGEN Y LIQUIDACIÓN (BCV + 0.5%)*
+💳 *Comisión Aplicada:* {detalle_tarjeta}
 💰 Capital Invertido: *${monto:,.2f} USD*
 📊 Tasa Oficial BCV: *{tasa_bcv:.2f} Bs*
 
@@ -611,6 +625,91 @@ def calcular_ganancia_neta(chat_id, monto=100.0, nombre_banco="Banesco (Digital)
 • Tasa de Venta USDT: *{venta_ves:.2f} Bs*
 • Total Retornado: *{total_retornado_bs:,.2f} Bs*
 • Equivalente USD (BCV): *${equivalente_usd_bcv:,.2f}*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *GANANCIA NETA FINAL*
+• En Bolívares: *{ganancia_bs:+,.2f} Bs*
+• En USD Equivalente: *${ganancia_usd:+,.2f}*
+• Rendimiento Operativo: *{rendimiento_pct:+.2f}%*
+
+• 💵 Ganancia por dólar: *${ganancia_por_dolar:+.3f}* por cada $1"""
+
+  enviar_mensaje(chat_id, mensaje, crear_teclado_principal(chat_id))
+
+
+def calcular_ganancia_mesa_cambio(
+    chat_id,
+    monto=100.0,
+    pct_tarjeta=1.5,
+    tasa_compra_mesa=45.0,
+    etiqueta_fuente=None,
+):
+  """Calculadora de Margen utilizando una tasa personalizada de Mesa de Cambio."""
+  compra_ves, venta_ves = obtener_precios_con_cache("VES")
+
+  if not venta_ves:
+    enviar_mensaje(
+        chat_id,
+        "⏳ Obteniendo precios del mercado...",
+        crear_teclado_principal(chat_id),
+    )
+    return
+
+  comision_tarjeta_pct = pct_tarjeta / 100.0
+  comision_bpay_pct = PORCENTAJE_BPAY / 100.0
+
+  # Costo en Bs según la tasa de Mesa de Cambio elegida
+  costo_mesa_monto_bs = monto * tasa_compra_mesa
+
+  comision_tarjeta = monto * comision_tarjeta_pct
+  comision_bpay = monto * comision_bpay_pct
+  total_comisiones = comision_tarjeta + comision_bpay
+
+  usdt_neto = monto - total_comisiones
+
+  total_retornado_bs = usdt_neto * venta_ves
+  equivalente_usd_mesa = (
+      total_retornado_bs / tasa_compra_mesa if tasa_compra_mesa > 0 else 0.0
+  )
+
+  ganancia_bs = total_retornado_bs - costo_mesa_monto_bs
+  ganancia_usd = equivalente_usd_mesa - monto
+  rendimiento_pct = (ganancia_usd / monto) * 100 if monto > 0 else 0.0
+  ganancia_por_dolar = ganancia_usd / monto if monto > 0 else 0.0
+
+  detalle_tarjeta = (
+      f"{etiqueta_fuente} ({pct_tarjeta}%)"
+      if etiqueta_fuente
+      else f"{pct_tarjeta}% Tarjeta Internacional"
+  )
+
+  mensaje = f"""🏛️ *ANÁLISIS DE MARGEN — MESA DE CAMBIO*
+💳 *Comisión Aplicada:* {detalle_tarjeta}
+💰 Capital Invertido: *${monto:,.2f} USD*
+⚙️ Tasa Compra Mesa: *{tasa_compra_mesa:.2f} Bs*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+1️⃣ *COSTO EN MESA DE CAMBIO (Egreso)*
+• Tasa Pactada: *{tasa_compra_mesa:.2f} Bs*
+• Total Invertido: *${monto:,.2f} USD* → *{costo_mesa_monto_bs:,.2f} Bs*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+2️⃣ *ESTRUCTURA DE COMISIONES*
+• Tarjeta Int. ({pct_tarjeta}%): *${comision_tarjeta:,.2f} USD*
+• Bpay ({PORCENTAJE_BPAY}%): *${comision_bpay:,.2f} USD*
+• TOTAL COMISIONES: *${total_comisiones:,.2f} USD*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+3️⃣ *LIQUIDACIÓN NETA (USDT)*
+• Capital bruto: *{monto:,.2f} USDT*
+• Comisiones: *-{total_comisiones:,.2f} USDT*
+• USDT neto obtenido: *{usdt_neto:,.2f} USDT*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+4️⃣ *RETORNO EN MERCADO P2P*
+• Tasa Venta USDT (Binance): *{venta_ves:.2f} Bs*
+• Total Retornado: *{total_retornado_bs:,.2f} Bs*
+• Equivalente USD (a Tasa Mesa): *${equivalente_usd_mesa:,.2f}*
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 📊 *GANANCIA NETA FINAL*
@@ -704,17 +803,48 @@ def mostrar_historial_ves(chat_id):
 
 def procesar_callback_inline(call):
   chat_id = call["message"]["chat"]["id"]
+  user_id = call["from"]["id"]
   data = call["data"]
 
-  if data.startswith("banco:"):
+  monto = usuario_monto_temporal.get(user_id, 100.0)
+  modo = usuario_modo_calculo.get(user_id, "bcv")
+
+  pct_tarjeta = 1.5
+  etiqueta = None
+
+  if data.startswith("pct:"):
+    pct_tarjeta = float(data.split("pct:")[1])
+    etiqueta = "Selección Manual"
+  elif data.startswith("banco:"):
     nombre_banco = data.split("banco:")[1]
-    # Usamos un capital por defecto o guardado, por defecto 100 USD
-    calcular_ganancia_neta(chat_id, monto=100.0, nombre_banco=nombre_banco)
+    pct_tarjeta = BANCOS_COMISIONES.get(nombre_banco, 1.5)
+    etiqueta = nombre_banco
+
+  # Ejecuta el cálculo según el modo seleccionado
+  if modo == "mesa_cambio":
+    tasa_mesa = usuario_tasa_mesa.get(user_id, 45.0)
+    calcular_ganancia_mesa_cambio(
+        chat_id,
+        monto=monto,
+        pct_tarjeta=pct_tarjeta,
+        tasa_compra_mesa=tasa_mesa,
+        etiqueta_fuente=etiqueta,
+    )
+  else:
+    calcular_ganancia_neta(
+        chat_id,
+        monto=monto,
+        pct_tarjeta=pct_tarjeta,
+        etiqueta_fuente=etiqueta,
+    )
+
+  usuario_monto_temporal.pop(user_id, None)
 
 
 def procesar_mensaje(chat_id, user_id, texto):
   global usuario_esperando_calculo, usuario_configurando_soles, usuario_esperando_margen
-  global TASA_SOLES_TARIFARIO
+  global usuario_esperando_tasa_mesa, usuario_tasa_mesa, usuario_modo_calculo
+  global TASA_SOLES_TARIFARIO, usuario_monto_temporal
 
   if not usuario_esta_en_grupo(user_id):
     enviar_mensaje(
@@ -741,25 +871,63 @@ def procesar_mensaje(chat_id, user_id, texto):
     except ValueError:
       pass
 
-  # Si el usuario está ingresando un monto para la calculadora de margen
+  # Captura de la Tasa de Mesa de Cambio enviada por el usuario
+  if usuario_esperando_tasa_mesa.get(user_id, False):
+    try:
+      tasa_ingresada = float(texto.replace(",", "."))
+      usuario_tasa_mesa[user_id] = tasa_ingresada
+      usuario_esperando_tasa_mesa[user_id] = False
+      usuario_esperando_margen[user_id] = True
+
+      msg = (
+          f"✅ *Tasa Mesa de Cambio registrada:* `{tasa_ingresada:.2f} Bs`\n\n"
+          "1️⃣ Envía el **monto en USD** a procesar (ejemplo: `250`).\n"
+          "2️⃣ O selecciona abajo la comisión para la base de **$100 USD**:"
+      )
+      enviar_mensaje(
+          chat_id,
+          msg,
+          teclado=crear_teclado_comisiones_y_bancos(),
+          tipo="inline",
+      )
+      return
+    except ValueError:
+      enviar_mensaje(
+          chat_id,
+          "⚠️ Por favor ingresa un número válido para la tasa (ejemplo:"
+          " `65.50`).",
+      )
+      return
+
+  # Entrada del monto en USD para el cálculo de margen
   if usuario_esperando_margen.get(user_id, False):
     try:
       monto = float(texto.replace(",", "."))
       usuario_esperando_margen[user_id] = False
-      # Guardamos temporalmente el monto o pedimos elegir el banco mediante botones inline
+      usuario_monto_temporal[user_id] = monto
+
+      modo = usuario_modo_calculo.get(user_id, "bcv")
+      encabezado = (
+          f"🏛️ *Mesa de Cambio ({usuario_tasa_mesa.get(user_id, 0):.2f} Bs)*"
+          if modo == "mesa_cambio"
+          else "🏦 *Calculadora BCV*"
+      )
+
+      msg = (
+          f"{encabezado}\n💰 Capital a procesar: *${monto:,.2f} USD*\n\n"
+          "Selecciona el **% de comisión por tarjeta internacional** a evaluar:"
+      )
       enviar_mensaje(
           chat_id,
-          f"💳 Capital ingresado: *${monto:,.2f} USD*\n\nSelecciona el"
-          " **banco** que utilizarás para la operación:",
-          teclado=crear_teclado_bancos(),
+          msg,
+          teclado=crear_teclado_comisiones_y_bancos(),
           tipo="inline",
       )
-      # Nota: para manejar el monto personalizado con el banco, podemos adaptarlo guardando en caché del usuario, por ahora usa 100 o extiende con un diccionario temporal si lo deseas.
       return
     except ValueError:
       pass
 
-  # Detección de entradas numéricas explícitas
+  # Detección de entradas numéricas explícitas para conversor
   if any(char.isdigit() for char in texto):
     if (
         usuario_esperando_calculo.get(user_id, False)
@@ -794,17 +962,35 @@ def procesar_mensaje(chat_id, user_id, texto):
     enviar_mensaje(chat_id, msg, crear_teclado_principal(user_id))
 
   elif texto == "📊 Calculadora de Margen":
+    limpiar_estados_usuario(user_id)
+    usuario_modo_calculo[user_id] = "bcv"
+    usuario_esperando_margen[user_id] = True
+    usuario_monto_temporal[user_id] = 100.0
+
     msg = (
-        "📊 *SIMULADOR DE MARGEN Y LIQUIDACIÓN P2P*\n\nSelecciona el banco"
-        " para calcular tu rendimiento con el capital base ($100 USD) o"
-        " presiona un banco directo:"
+        "📊 *SIMULADOR DE MARGEN Y LIQUIDACIÓN P2P (BCV)*\n\n1️⃣ Envía un monto"
+        " específico en USD (ejemplo: `250`).\n2️⃣ O bien, presiona directamente"
+        " abajo el **porcentaje de comisión** a evaluar para la base de"
+        " **$100 USD**:"
     )
     enviar_mensaje(
         chat_id,
         msg,
-        teclado=crear_teclado_bancos(),
+        teclado=crear_teclado_comisiones_y_bancos(),
         tipo="inline",
     )
+
+  elif texto == "🏛️ Mesa de Cambio":
+    limpiar_estados_usuario(user_id)
+    usuario_modo_calculo[user_id] = "mesa_cambio"
+    usuario_esperando_tasa_mesa[user_id] = True
+    usuario_monto_temporal[user_id] = 100.0
+
+    msg = (
+        "🏛️ *CALCULADORA DE MARGEN (MESA DE CAMBIO)*\n\n✍️ Ingresa la **tasa de"
+        " compra en Bs** pactada en Mesa de Cambio (ejemplo: `65.50`):"
+    )
+    enviar_mensaje(chat_id, msg, crear_teclado_principal(user_id))
 
   elif texto == "📈 Historial de brecha VES":
     mostrar_historial_ves(chat_id)
@@ -820,7 +1006,7 @@ def procesar_mensaje(chat_id, user_id, texto):
       enviar_mensaje(
           chat_id,
           "❌ Acción restringida a administradores.",
-          crear_teclado_principal(user_id),
+          crear_teclado_principal(chat_id),
       )
 
   elif texto == "📋 Tarifario USD":
@@ -868,6 +1054,7 @@ def procesar_mensaje(chat_id, user_id, texto):
 
   elif texto == "📊 P2P Multidivisa":
     mostrar_precios_usdt(chat_id)
+
   elif texto == "🇻🇪 Tasa VES":
     mostrar_precio_individual(chat_id, "VES")
 
@@ -893,7 +1080,25 @@ def procesar_mensaje(chat_id, user_id, texto):
     try:
       monto_usuario = float(texto.replace(",", "."))
       if monto_usuario > 0:
-        calcular_ganancia_neta(chat_id, monto_usuario)
+        usuario_monto_temporal[user_id] = monto_usuario
+        modo = usuario_modo_calculo.get(user_id, "bcv")
+        encabezado = (
+            f"🏛️ *Mesa de Cambio ({usuario_tasa_mesa.get(user_id, 0):.2f} Bs)*"
+            if modo == "mesa_cambio"
+            else "🏦 *Calculadora BCV*"
+        )
+
+        msg = (
+            f"{encabezado}\n💰 Capital a procesar: *${monto_usuario:,.2f}"
+            " USD*\n\nSelecciona el **% de comisión por tarjeta"
+            " internacional** a evaluar:"
+        )
+        enviar_mensaje(
+            chat_id,
+            msg,
+            teclado=crear_teclado_comisiones_y_bancos(),
+            tipo="inline",
+        )
     except ValueError:
       if chat_id > 0:
         enviar_mensaje(
@@ -918,7 +1123,6 @@ def telegram_webhook():
     json_string = request.get_data().decode("utf-8")
     update = json.loads(json_string)
 
-    # Manejo de botones Inline (Callback Query)
     if "callback_query" in update:
       call = update["callback_query"]
       threading.Thread(target=procesar_callback_inline, args=(call,)).start()
